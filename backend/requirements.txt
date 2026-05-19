@@ -2,3 +2,11 @@ fastapi
 uvicorn
 python-multipart
 python-dotenv
+langchain
+langchain-community
+langchain-huggingface
+faiss-cpu
+pypdf
+sentence-transformers
+langchain-openai
+openai
