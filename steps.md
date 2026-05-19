@@ -17,7 +17,7 @@
 - Designed professional `App.jsx` and `index.css` reflecting a serious AI platform aesthetic.
 - **Phase 2 (Current):** Added offline RAG dependencies (`langchain`, `faiss-cpu`, `langchain-huggingface`, `pypdf`) and implemented `DocumentProcessor` service.
 - Wired the `/api/upload` endpoint to parse PDFs, chunk text using `RecursiveCharacterTextSplitter`, and index it using HuggingFace embeddings (`all-MiniLM-L6-v2`) into a local FAISS vector store.
-- Implemented `QueryProcessor` utilizing OpenAI (`gpt-4o-mini`) to generate highly reliable, grounded answers from FAISS retrieved chunks.
+- Implemented `QueryProcessor` utilizing Google Gemini (`gemini-2.5-flash`) via `langchain-google-genai` to generate highly reliable, grounded answers from FAISS retrieved chunks.
 - Created `/api/query` POST endpoint utilizing Pydantic schemas (`QueryRequest`) to enforce data structures.
 
 ## Pending Tasks
@@ -26,13 +26,14 @@
 - [x] Build retrieval query endpoint (`/api/query`) to search the FAISS vector store.
 - [x] Wire up basic grounded answer generation using the retrieved context.
 - [x] Connect the React frontend to the `/api/query` endpoint and display answers + sources.
+- [ ] Transition to Phase 3 (Hybrid RAG).
 
 ## Current Limitations
 - The vector DB path (`vector_db`) is hardcoded; should be moved to environment config later.
 - No AI agent (LangGraph) or memory layer is wired up yet.
 
 ## Next Milestone
-- Phase 2: Implement PDF ingestion, text extraction, chunking, and basic vector retrieval using FAISS.
+- Phase 3: Implement BM25 keyword retrieval, hybrid ranking, and query rewriting to improve retrieval quality.
 
 ## Changed Files
 - `README.md`
@@ -50,5 +51,5 @@
 - Adopted a modular structure from the start, separating frontend and backend to facilitate distinct scaling and development of the FastAPI and React applications.
 - Built a premium UI with glassmorphism out of the gate to signal the "serious production-style" intent.
 - Selected `HuggingFaceEmbeddings` with `all-MiniLM-L6-v2` for the initial embedding model to ensure the system can run offline, fast, and completely free without cloud API limits.
-- Selected `OpenAI API (gpt-4o-mini)` for the generation layer to guarantee strict schema adherence, reasoning depth, and reliability needed for the upcoming LangGraph state machine.
+- Selected **Google Gemini 2.5 Flash** (`gemini-2.5-flash`) via `langchain-google-genai` for the generation layer to leverage its massive context, cost-effectiveness, and speed, replacing the initial mock/OpenAI plans.
 - Moved RAG logic into dedicated `DocumentProcessor` and `QueryProcessor` classes in `backend/services/` to keep `main.py` clean, adhering to solid engineering practices.

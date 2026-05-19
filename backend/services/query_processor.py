@@ -1,5 +1,5 @@
 import os
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -7,16 +7,17 @@ from langchain_huggingface import HuggingFaceEmbeddings
 class QueryProcessor:
     """
     Service responsible for querying the vector database and generating 
-    grounded responses using the OpenAI API.
+    grounded responses using the Gemini API.
     """
     def __init__(self, vector_store_path: str = "vector_db"):
         self.vector_store_path = vector_store_path
         # Must match the embeddings used during ingestion
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         
-        # Initialize OpenAI Chat Model (gpt-4o-mini is fast and accurate for RAG)
+        # Initialize Gemini Chat Model (gemini-2.5-flash is fast, accurate, and cost-effective)
         # We set temperature to 0 to maximize determinism and reliability.
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+
         
         # Define a strict system prompt to enforce groundedness
         self.prompt_template = ChatPromptTemplate.from_messages([

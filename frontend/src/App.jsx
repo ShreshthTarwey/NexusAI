@@ -97,7 +97,7 @@ function App() {
       console.error("Query error:", error);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Error: ${error.message}. Please check if the backend is running and OPENAI_API_KEY is configured in .env.`
+        content: `Error: ${error.message}. Please check if the backend is running and GEMINI_API_KEY is configured in .env.`
       }]);
     } finally {
       setIsQuerying(false);
@@ -215,12 +215,12 @@ function App() {
         <div className="orchestration-notice">
           <h3>System Status</h3>
           <p>
-            <strong>Phase 1 Initialization:</strong> The core infrastructure is online. 
-            The LangGraph state machine, specialized reasoning agents, and hybrid retrieval layer 
-            are pending deployment in subsequent phases.
+            <strong>Phase 2 Ingestion & RAG Pipeline:</strong> Active. 
+            Documents are parsed into chunks and embedded using HuggingFace embeddings (`all-MiniLM-L6-v2`) in a local FAISS vector store. 
+            Grounded responses are generated via **Gemini 2.5 Flash** (`gemini-2.5-flash`).
           </p>
           <p>
-            Current capabilities are limited to foundational API connectivity and UI routing.
+            LangGraph state machines and multi-agent hybrid retrieval layers are pending in subsequent phases.
           </p>
         </div>
       </main>
