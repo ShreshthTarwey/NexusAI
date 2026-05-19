@@ -40,8 +40,8 @@ NexusAI/
 ```
 
 ## Future Roadmap
-- Phase 1: Project Foundation (Current)
-- Phase 2: Basic Offline RAG Pipeline
+- Phase 1: Project Foundation (Completed)
+- Phase 2: Basic Offline RAG Pipeline (Current)
 - Phase 3: Hybrid RAG
 - Phase 4: Observability & Tracing
 - Phase 5: Agentic Workflow
