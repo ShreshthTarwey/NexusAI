@@ -1,9 +1,9 @@
 # Engineering Log & Progress Tracker
 
 ## Current Project State
-- Transitioned to **Phase 5: Agentic Routing**.
-- **Phase 4: Observability & Tracing** is completed.
-- **Phase 1, 2, 3 & 3.5** are completed.
+- Transitioned to **Phase 6: Conversational Memory & Session Management**.
+- **Phase 5: Agentic Routing** is completed.
+- **Phase 1, 2, 3, 3.5 & 4** are completed.
 - The fundamental directory structure (`backend/` and `frontend/`) has been initialized.
 - `README.md` and `steps.md` are actively maintained.
 - FastAPI backend configured with an initial file upload API endpoint (`/api/upload`) and CORS.
@@ -30,19 +30,21 @@
 - Upgraded the React frontend (`App.jsx`) to continuously poll the `job_id` status and display real-time async processing updates.
 - Overhauled the `/api/query` endpoint to yield `StreamingResponse` via Server-Sent Events (SSE).
 - Upgraded the React chat UI to decode the `ReadableStream` dynamically, creating a word-by-word typing effect directly from Gemini's generative chain.
-- **Phase 4 (Current):** Integrated LangSmith for enterprise-grade observability.
+- **Phase 4:** Integrated LangSmith for enterprise-grade observability.
 - Added `@traceable` decorators to Python backend functions to generate granular execution latency dashboards.
+- **Phase 5 (Current):** Integrated LangGraph for Agentic Routing.
+- Implemented state-machine routing (`AgentOrchestrator`) utilizing structured Pydantic classifications to steer query executions into specialized single-document RAG vs. multi-document comparison paths.
 
 ## Pending Tasks
-- [x] Transition to Phase 4 (Observability & Tracing).
-- [ ] Transition to Phase 5 (Agentic Routing).
-- [ ] Integrate LangGraph to introduce conditional logic and routing between simple queries and complex document comparisons.
+- [x] Transition to Phase 5 (Agentic Routing).
+- [ ] Transition to Phase 6 (Conversational Memory & Session Management).
+- [ ] Introduce conversational memory persistence and unique session IDs to allow users to maintain context across query streams.
 
 ## Current Limitations
-- No AI agent (LangGraph) or memory layer is wired up yet.
+- No memory layer is wired up yet.
 
 ## Next Milestone
-- Phase 5: Implement LangGraph to act as an orchestration layer, routing user questions to different specialized pipelines depending on intent.
+- Phase 6: Implement persistent conversation memory and session IDs to maintain chat context across requests.
 
 ## Changed Files
 - `README.md`
