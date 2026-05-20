@@ -250,42 +250,114 @@ const parseInlineMarkdown = (text) => {
 };
 
 function App() {
+  const [sessions, setSessions] = useState([]);
+  const [currentSession, setCurrentSession] = useState('default');
   const [files, setFiles] = useState([]);
-  const [status, setStatus] = useState('idle'); // idle, uploading, success, error
+  const [status, setStatus] = useState('idle');
   const [response, setResponse] = useState(null);
   const fileInputRef = useRef(null);
 
-  // Chat States
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
   const [isQuerying, setIsQuerying] = useState(false);
   const messagesEndRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  // Fetch all sessions on load
+  useEffect(() => {
+    fetchSessions();
+  }, []);
+
+  // When session changes, fetch its messages
+  useEffect(() => {
+    if (currentSession && currentSession !== 'default') {
+      fetchSessionMessages(currentSession);
+    } else {
+      setMessages([]);
+      setFiles([]);
+      setStatus('idle');
+    }
+  }, [currentSession]);
 
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const fetchSessions = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/sessions');
+      const data = await res.json();
+      setSessions(data.sessions || []);
+    } catch (e) {
+      console.error("Failed to fetch sessions", e);
+    }
+  };
+
+  const fetchSessionMessages = async (sessionId) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/sessions/${sessionId}/messages`);
+      const data = await res.json();
+      if (data.messages && data.messages.length > 0) {
+        setMessages(data.messages);
+        setStatus('success'); // Assume if there are messages, db has files
+      } else {
+        setMessages([]);
+        setStatus('idle');
+      }
+    } catch (e) {
+      console.error("Failed to fetch messages", e);
+    }
+  };
+
+  const handleNewChat = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/sessions', { method: 'POST' });
+      const data = await res.json();
+      setCurrentSession(data.session_id);
+      fetchSessions();
+    } catch (e) {
+      console.error("Failed to create new chat", e);
+    }
+  };
+
+  const handleDeleteSession = async (e, sessionId) => {
+    e.stopPropagation();
+    if (!window.confirm("Delete this chat?")) return;
+    try {
+      await fetch(`http://localhost:8000/api/sessions/${sessionId}`, { method: 'DELETE' });
+      if (currentSession === sessionId) {
+        setCurrentSession('default');
+      }
+      fetchSessions();
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
       setFiles(Array.from(e.target.files));
       setStatus('idle');
       setResponse(null);
+      // Auto-create a session if we are in default state
+      if (currentSession === 'default') {
+        handleNewChat();
+      }
     }
   };
 
   const handleUploadClick = () => {
-    fileInputRef.current.click();
+    if (currentSession === 'default') {
+        handleNewChat();
+    }
+    setTimeout(() => {
+        fileInputRef.current.click();
+    }, 100);
   };
 
   const handleClearDatabase = async () => {
     if (!window.confirm("Are you sure you want to wipe the knowledge base? This will delete all uploaded documents.")) return;
-    
     try {
-      await fetch('http://localhost:8000/api/clear', { method: 'DELETE' });
+      await fetch(`http://localhost:8000/api/clear?session_id=${currentSession}`, { method: 'DELETE' });
       setFiles([]);
       setMessages([]);
       setStatus('idle');
@@ -297,33 +369,24 @@ function App() {
 
   const handleSubmit = async () => {
     if (files.length === 0) return;
-
     setStatus('uploading');
-    
     const formData = new FormData();
     files.forEach(file => {
       formData.append('files', file);
     });
+    formData.append('session_id', currentSession);
 
     try {
       const res = await fetch('http://localhost:8000/api/upload', {
         method: 'POST',
         body: formData,
       });
-
-      if (!res.ok) {
-        throw new Error('Upload failed');
-      }
-
+      if (!res.ok) throw new Error('Upload failed');
       const data = await res.json();
       if (data.job_id) {
         pollUploadStatus(data.job_id);
-      } else {
-        setResponse(data);
-        setStatus('success');
       }
     } catch (error) {
-      console.error("Error uploading file:", error);
       setStatus('error');
       setResponse({ error: error.message });
     }
@@ -334,12 +397,11 @@ function App() {
       try {
         const res = await fetch(`http://localhost:8000/api/upload/status/${jobId}`);
         const data = await res.json();
-        
         if (data.status === 'success') {
           clearInterval(interval);
           setResponse(data);
           setStatus('success');
-          setMessages([{
+          setMessages(prev => [...prev, {
             role: 'assistant',
             content: `I've successfully ingested the document (${data.chunks} chunks). How can I help you analyze it?`
           }]);
@@ -359,6 +421,10 @@ function App() {
   const handleQuerySubmit = async (e) => {
     e.preventDefault();
     if (!query.trim() || isQuerying) return;
+    if (currentSession === 'default') {
+        alert("Please create a New Chat first.");
+        return;
+    }
 
     const userMessage = { role: 'user', content: query };
     setMessages(prev => [...prev, userMessage]);
@@ -369,12 +435,10 @@ function App() {
       const res = await fetch('http://localhost:8000/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: userMessage.content }),
+        body: JSON.stringify({ query: userMessage.content, session_id: currentSession }),
       });
-
       if (!res.ok) throw new Error('Query failed');
 
-      // Initialize an empty assistant message
       setMessages(prev => [...prev, { role: 'assistant', content: '', sources: [] }]);
 
       const reader = res.body.getReader();
@@ -388,17 +452,13 @@ function App() {
         if (value) {
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
-          
-          // The last element might be an incomplete line, so we keep it in the buffer
           buffer = lines.pop();
 
           for (const line of lines) {
             if (line.trim().startsWith('data: ')) {
               try {
-                // Remove 'data: ' prefix
                 const jsonStr = line.replace(/^data:\s*/, '');
                 if (!jsonStr.trim()) continue;
-                
                 const data = JSON.parse(jsonStr);
                 
                 if (data.text) {
@@ -424,17 +484,20 @@ function App() {
                   });
                 }
               } catch (e) {
-                console.warn("Failed to parse SSE line:", line, e);
+                console.warn("Failed to parse SSE line", e);
               }
             }
           }
         }
       }
+      
+      // Update session title dynamically after first query completes
+      fetchSessions();
+      
     } catch (error) {
-      console.error("Query error:", error);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Error: ${error.message}. Please check if the backend is running and GEMINI_API_KEY is configured.`
+        content: `Error: ${error.message}.`
       }]);
     } finally {
       setIsQuerying(false);
@@ -442,147 +505,145 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      <header>
-        <h1>NexusAI</h1>
-        <p className="subtitle">Self-Correcting Multi-Agent Research Intelligence Platform</p>
-      </header>
-
-      <main>
-        <div className="upload-card">
-          <div className="upload-icon">📄</div>
-          <h2>Upload Research Document</h2>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>
-            Supported formats: PDF, Markdown, TXT
-          </p>
-
-          <input
-            type="file"
-            multiple
-            ref={fileInputRef}
-            onChange={handleFileChange}
-            className="file-input"
-            accept=".pdf,.md,.txt"
-          />
-
-          {files.length === 0 ? (
-            <button className="upload-btn" onClick={handleUploadClick}>
-              Select Files
-            </button>
-          ) : (
-            <div className="file-details">
-              <strong>Selected Files ({files.length}):</strong>
-              <ul style={{ margin: '0.5rem 0', paddingLeft: '1.2rem', color: 'var(--text-secondary)' }}>
-                {files.map((f, i) => (
-                  <li key={i}>{f.name} ({(f.size / 1024 / 1024).toFixed(2)} MB)</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {files.length > 0 && status !== 'uploading' && status !== 'success' && (
-            <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-              <button className="upload-btn" onClick={handleSubmit}>
-                Process {files.length > 1 ? 'Documents' : 'Document'}
-              </button>
-            </div>
-          )}
-
-          {status === 'uploading' && (
-            <div>
-              <div className="loading-spinner"></div>
-              <p>Initializing Ingestion Pipeline...</p>
-            </div>
-          )}
-
-          {status === 'success' && response && (
-            <div className="status-message status-success">
-              ✓ {response.message}
-            </div>
-          )}
-
-          {status === 'error' && response && (
-            <div className="status-message status-error">
-              ✗ Error: {response.error}
-            </div>
-          )}
-
-          {(status === 'success' || messages.length > 0) && (
-            <div style={{ marginTop: '1.5rem' }}>
-              <button className="upload-btn" style={{ background: 'var(--error)' }} onClick={handleClearDatabase}>
-                Clear Knowledge Base
-              </button>
-            </div>
-          )}
+    <div className="app-layout">
+      {/* Sidebar for Sessions */}
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <h2>NexusAI</h2>
         </div>
-
-        {/* Chat Interface - Only show after a file is successfully uploaded or if messages exist */}
-        {(status === 'success' || messages.length > 0) && (
-          <div className="chat-section">
-            <div className="chat-messages">
-              {messages.map((msg, index) => (
-                <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}>
-                  <MarkdownRenderer content={msg.content} />
-                  
-                  {/* Display Sources if available (for traceability) */}
-                  {msg.sources && msg.sources.length > 0 && (
-                    <div className="sources-container">
-                      <div style={{ marginBottom: '0.5rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Retrieved Contexts:</div>
-                      <div className="sources-list">
-                        {msg.sources.map((src, idx) => {
-                          const pageVal = src.metadata?.page;
-                          const hasValidPage = pageVal !== undefined && 
-                                               pageVal !== null && 
-                                               pageVal !== '?' && 
-                                               pageVal !== 'Unknown' && 
-                                               !isNaN(Number(pageVal));
-                          return (
-                            <span key={idx} className="source-badge" title={src.content}>
-                              {src.metadata?.source_file || 'Unknown'}
-                              {hasValidPage ? ` (Page ${Number(pageVal) + 1})` : ''}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-              {isQuerying && (
-                <div className="message assistant-message">
-                  <div className="loading-spinner" style={{ width: '1.5rem', height: '1.5rem', margin: 0 }}></div>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-
-            <form className="chat-input-wrapper" onSubmit={handleQuerySubmit}>
-              <input
-                type="text"
-                className="chat-input"
-                placeholder="Ask a question about the uploaded document..."
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                disabled={isQuerying}
-              />
-              <button type="submit" className="send-btn" disabled={!query.trim() || isQuerying}>
-                ➤
+        <div className="sidebar-new">
+          <button className="new-chat-btn" onClick={handleNewChat}>
+            <span style={{marginRight: '8px'}}>+</span> New Chat
+          </button>
+        </div>
+        <div className="sidebar-sessions">
+          {sessions.map(s => (
+            <div 
+              key={s.session_id} 
+              className={`session-item ${currentSession === s.session_id ? 'active' : ''}`}
+              onClick={() => setCurrentSession(s.session_id)}
+            >
+              <div className="session-title">💬 {s.title || 'New Chat'}</div>
+              <button 
+                className="delete-session-btn"
+                onClick={(e) => handleDeleteSession(e, s.session_id)}
+                title="Delete Chat"
+              >
+                ✕
               </button>
-            </form>
-          </div>
-        )}
+            </div>
+          ))}
+        </div>
+      </aside>
 
-        <div className="orchestration-notice">
-          <h3>System Status</h3>
-          <p>
-            <strong>Phase 3 Hybrid RAG Pipeline:</strong> Active. 
-            Documents are processed efficiently via PyMuPDF in background tasks. 
-            Hybrid retrieval uses both FAISS (Semantics) and BM25 (Keywords). 
-            Grounded responses stream via SSE from **Gemini 2.5 Flash**.
-          </p>
-          <p>
-            LangGraph state machines and multi-agent hybrid retrieval layers are pending in subsequent phases.
-          </p>
+      {/* Main Area */}
+      <main className="main-content">
+        <div className="app-container">
+          <header style={{textAlign: 'left', marginBottom: '2rem'}}>
+            <h1 style={{fontSize: '2rem'}}>
+                {currentSession === 'default' 
+                    ? "Welcome to NexusAI" 
+                    : sessions.find(s => s.session_id === currentSession)?.title || "New Chat"}
+            </h1>
+            <p className="subtitle">Upload documents and ask questions</p>
+          </header>
+
+          <div className="upload-card">
+            <input
+              type="file"
+              multiple
+              ref={fileInputRef}
+              onChange={handleFileChange}
+              className="file-input"
+              accept=".pdf,.md,.txt"
+            />
+
+            {files.length === 0 && messages.length === 0 && (
+              <>
+                <div className="upload-icon">📄</div>
+                <h2>Upload Research Document</h2>
+                <button className="upload-btn" onClick={handleUploadClick}>
+                  Select Files
+                </button>
+              </>
+            )}
+
+            {files.length > 0 && status !== 'uploading' && status !== 'success' && (
+              <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                <div className="file-details">
+                  <strong>Selected Files ({files.length})</strong>
+                </div>
+                <button className="upload-btn" onClick={handleSubmit}>
+                  Process {files.length > 1 ? 'Documents' : 'Document'}
+                </button>
+              </div>
+            )}
+
+            {status === 'uploading' && (
+              <div>
+                <div className="loading-spinner"></div>
+                <p>Initializing Ingestion Pipeline...</p>
+              </div>
+            )}
+
+            {status === 'success' && response && (
+              <div className="status-message status-success">
+                ✓ {response.message}
+              </div>
+            )}
+          </div>
+
+          {(status === 'success' || messages.length > 0) && currentSession !== 'default' && (
+            <div className="chat-section">
+              <div className="chat-messages">
+                {messages.map((msg, index) => (
+                  <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}>
+                    <MarkdownRenderer content={msg.content} />
+                    {msg.sources && msg.sources.length > 0 && (
+                      <div className="sources-container">
+                        <div style={{ marginBottom: '0.5rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Retrieved Contexts:</div>
+                        <div className="sources-list">
+                          {msg.sources.map((src, idx) => {
+                            const pageVal = src.metadata?.page;
+                            const hasValidPage = pageVal !== undefined && pageVal !== null && !isNaN(Number(pageVal));
+                            return (
+                              <span key={idx} className="source-badge" title={src.content}>
+                                {src.metadata?.source_file || 'Unknown'}
+                                {hasValidPage ? ` (Page ${Number(pageVal) + 1})` : ''}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {isQuerying && (
+                  <div className="message assistant-message">
+                    <div className="loading-spinner" style={{ width: '1.5rem', height: '1.5rem', margin: 0 }}></div>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              <form className="chat-input-wrapper" onSubmit={handleQuerySubmit}>
+                <button type="button" className="send-btn" style={{background: 'transparent', color: 'var(--text-secondary)'}} onClick={handleUploadClick} title="Upload more files">
+                    📎
+                </button>
+                <input
+                  type="text"
+                  className="chat-input"
+                  placeholder="Ask a question about the uploaded document..."
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  disabled={isQuerying}
+                />
+                <button type="submit" className="send-btn" disabled={!query.trim() || isQuerying}>
+                  ➤
+                </button>
+              </form>
+            </div>
+          )}
         </div>
       </main>
     </div>

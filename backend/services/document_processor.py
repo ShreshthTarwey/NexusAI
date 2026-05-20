@@ -15,11 +15,15 @@ class DocumentProcessor:
     Currently uses an offline HuggingFace model (all-MiniLM-L6-v2) for embeddings
     and FAISS for fast local vector retrieval.
     """
-    def __init__(self, vector_store_path: str = "vector_db"):
-        self.vector_store_path = vector_store_path
-        self.corpus_path = "corpus.pkl"
-        self.bm25_path = "bm25_retriever.pkl"
-        self.lock_path = "database.lock"
+    def __init__(self, session_id: str = "default"):
+        self.session_id = session_id
+        self.session_dir = os.path.join("storage", "sessions", session_id)
+        os.makedirs(self.session_dir, exist_ok=True)
+        
+        self.vector_store_path = os.path.join(self.session_dir, "vector_db")
+        self.corpus_path = os.path.join(self.session_dir, "corpus.pkl")
+        self.bm25_path = os.path.join(self.session_dir, "bm25_retriever.pkl")
+        self.lock_path = os.path.join(self.session_dir, "database.lock")
         
         # Using a highly efficient local embedding model
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")

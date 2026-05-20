@@ -40,17 +40,24 @@
   - Upgraded `index.css` with premium CSS styles for headers, lists, code panels, and comparison tables using modern typography, glassmorphism, responsive alignment, and sleek neon accents.
   - Fixed the metadata display inconsistency where non-PDF documents (Markdown and Text files) showed broken `(Page ?)` markers by implementing a robust numeric page validation check in `App.jsx` that hides the page count completely when it is missing or invalid.
   - Reinforced routing token containment within `backend/main.py` by filtering the LangGraph stream strictly on the `"generator"` event tag to drop router classification chunks (such as `{"route": "compare_rag"}`) in real time, preventing them from leaking into the user's UI.
+- **Phase 6 (Completed):** Integrated Conversational Memory & Session Management.
+- Integrated MongoDB using `motor` to persistently store chat history and session metadata.
+- Implemented multi-tenant session isolation, dynamically routing FAISS vector DBs and BM25 `.pkl` files to `storage/sessions/<session_id>/` to prevent cross-contamination between different chat threads.
+- Built a query condensation/rewriter node into the LangGraph state machine. It retrieves the master prompt and the last 5 turns of conversation to rewrite follow-up queries, preserving context while avoiding forced comparisons during entity shifts (e.g. asking "Google?").
+- Refactored the React frontend to feature a premium two-column layout with a dynamic sidebar for switching, creating, and deleting persistent chat sessions.
+- Suppressed benign Python 3.13 aiohttp RuntimeWarnings (`ClientResponse.json was never awaited`) to keep terminal logs clean.
 
 ## Pending Tasks
-- [x] Transition to Phase 5 (Agentic Routing).
-- [ ] Transition to Phase 6 (Conversational Memory & Session Management).
-- [ ] Introduce conversational memory persistence and unique session IDs to allow users to maintain context across query streams.
+- [x] Transition to Phase 6 (Conversational Memory & Session Management).
+- [ ] Transition to Phase 7 (Reliability & Control Layer).
+- [ ] Implement system safety guardrails, rate-limiting, or LLM output validation logic.
 
 ## Current Limitations
-- No memory layer is wired up yet.
+- Phase 6 is complete, but session directories on disk currently persist indefinitely; a garbage collection or expiry date logic needs to be implemented later.
+- No semantic routing guardrails or strict JSON structural validations are placed on the final generation output yet.
 
 ## Next Milestone
-- Phase 6: Implement persistent conversation memory and session IDs to maintain chat context across requests.
+- Phase 7: Implement Reliability, Guardrails, and Control Layer to validate LLM outputs and enforce system safety policies.
 
 ## Changed Files
 - `README.md`

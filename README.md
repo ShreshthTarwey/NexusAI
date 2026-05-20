@@ -4,7 +4,7 @@ NexusAI is a production-grade Agentic AI platform focused on Hybrid RAG, Multi-A
 
 ## Architecture
 
-The system evolves progressively, currently standing at **Phase 6: Conversational Memory & Session Management**.
+The system evolves progressively, currently standing at **Phase 7: Reliability & Control Layer**.
 
 **High-Level Architecture (Target):**
 User -> Frontend UI -> FastAPI Backend -> LangGraph State Machine -> Supervisor/Orchestrator Agent -> Specialized Agents -> Hybrid Retrieval Layer -> Validation + Reliability Layer -> Control Layer -> Memory Layer -> Evaluation Layer -> Final Response Generator
@@ -204,8 +204,8 @@ NexusAI/
 - Phase 3 & 3.5: Hybrid RAG & Ingestion Performance (Completed)
 - Phase 4: Observability & Tracing via LangSmith (Completed)
 - Phase 5: Agentic Routing via LangGraph (Completed)
-- Phase 6: Conversational Memory & Session Management (Current)
-- Phase 7: Reliability & Control Layer
+- Phase 6: Conversational Memory & Session Management (Completed) *(Note: Session folder expiry date logic to be implemented later)*
+- Phase 7: Reliability & Control Layer (Current)
 - Phase 8: Tool Calling Layer
 - Phase 9: Evaluation Layer
 - Phase 10: Production Engineering

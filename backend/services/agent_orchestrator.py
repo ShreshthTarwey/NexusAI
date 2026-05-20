@@ -13,19 +13,21 @@ class RouterDecision(BaseModel):
 
 class AgentState(TypedDict):
     query: str
+    original_query: str
     route: str
     answer: str
     sources: List[Dict]
+    chat_history: str
 
 class AgentOrchestrator:
     """
     Orchestration layer that manages state and routes user queries using LangGraph.
     Differentiates between simple single-document retrieval and complex cross-file comparisons.
     """
-    def __init__(self, vector_store_path: str = "vector_db"):
-        self.vector_store_path = vector_store_path
+    def __init__(self, session_id: str = "default"):
+        self.session_id = session_id
         self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-        self.query_processor = QueryProcessor(vector_store_path=vector_store_path)
+        self.query_processor = QueryProcessor(session_id=session_id)
         
         # Check for Groq API Key and activate resilience layer
         groq_api_key = os.getenv("GROQ_API_KEY")
@@ -55,12 +57,14 @@ class AgentOrchestrator:
         workflow = StateGraph(AgentState)
         
         # Define nodes
+        workflow.add_node("rewrite_query", self.rewrite_query)
         workflow.add_node("route_intent", self.route_intent)
         workflow.add_node("execute_simple_rag", self.execute_simple_rag)
         workflow.add_node("execute_compare_rag", self.execute_compare_rag)
         
         # Define edges
-        workflow.add_edge(START, "route_intent")
+        workflow.add_edge(START, "rewrite_query")
+        workflow.add_edge("rewrite_query", "route_intent")
         
         # Conditional path selection
         workflow.add_conditional_edges(
@@ -78,6 +82,41 @@ class AgentOrchestrator:
         # Compile the state machine
         self.graph = workflow.compile()
         
+    async def rewrite_query(self, state: AgentState) -> Dict:
+        """
+        Rewrites the query based on chat history to inject missing context (coreference resolution).
+        """
+        history = state.get("chat_history", "")
+        original_query = state["query"]
+        
+        if not history.strip():
+            return {"query": original_query, "original_query": original_query}
+            
+        prompt = (
+            "You are an expert Query Reformulator. Given a conversation history and a follow-up query, "
+            "rewrite the follow-up query to be a standalone search query.\n\n"
+            "Rules:\n"
+            "1. If the follow-up query is short (e.g. 'Google?', 'What about Microsoft?'), "
+            "it is a topic/entity shift. Rewrite it to ask the core question category "
+            "about the new entity (e.g. 'What is the hiring process of Google?'). Do NOT assume a comparison "
+            "between the old and new entities unless the user explicitly uses comparison words "
+            "like 'compare', 'contrast', 'versus', 'differences', or 'similarities'.\n"
+            "2. Keep the rewritten query concise and optimized for semantic and keyword search.\n"
+            "3. Do NOT answer the question. Only output the rewritten standalone query.\n\n"
+            f"History:\n{history}\n\n"
+            f"Latest Question: {original_query}\n\n"
+            "Standalone Query:"
+        )
+        try:
+            # We use generation_llm (fallback supported) for rewriting as it's better at reasoning
+            response = await self.generation_llm.ainvoke(prompt)
+            rewritten = response.content.strip()
+            print(f"NexusAI Rewriter: '{original_query}' -> '{rewritten}'")
+            return {"query": rewritten, "original_query": original_query}
+        except Exception as e:
+            print(f"Query rewriting failed: {e}")
+            return {"query": original_query, "original_query": original_query}
+            
     def route_intent(self, state: AgentState) -> Dict:
         """
         Analyzes query intent and decides which RAG path to execute.

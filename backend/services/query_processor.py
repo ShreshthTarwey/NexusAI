@@ -20,8 +20,13 @@ class QueryProcessor:
     Service responsible for querying the vector database and generating 
     grounded responses using the Gemini API.
     """
-    def __init__(self, vector_store_path: str = "vector_db"):
-        self.vector_store_path = vector_store_path
+    def __init__(self, session_id: str = "default"):
+        self.session_id = session_id
+        self.session_dir = os.path.join("storage", "sessions", session_id)
+        self.vector_store_path = os.path.join(self.session_dir, "vector_db")
+        self.bm25_path = os.path.join(self.session_dir, "bm25_retriever.pkl")
+        self.lock_path = os.path.join(self.session_dir, "database.lock")
+        
         # Must match the embeddings used during ingestion
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         
@@ -43,8 +48,6 @@ class QueryProcessor:
         else:
             print("NexusAI Query Processor Warning: GROQ_API_KEY is not defined in the environment. Defaulting to Gemini alone.")
             self.llm = gemini_llm
-            
-        self.lock_path = "database.lock"
 
         
         # Define a strict system prompt to enforce groundedness and document comparison
@@ -80,7 +83,7 @@ class QueryProcessor:
 
             # Load the BM25 statistical index (BM25 - Keyword)
             try:
-                with open("bm25_retriever.pkl", 'rb') as f:
+                with open(self.bm25_path, 'rb') as f:
                     bm25_retriever = pickle.load(f)
                 
                 # Make sure retrieval limits match the requested 'k'
