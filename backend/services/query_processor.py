@@ -6,6 +6,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.retrievers import EnsembleRetriever
+from langsmith import traceable
+from filelock import FileLock
 
 class QueryProcessor:
     """
@@ -20,6 +22,7 @@ class QueryProcessor:
         # Initialize Gemini Chat Model (gemini-2.5-flash is fast, accurate, and cost-effective)
         # We set temperature to 0 to maximize determinism and reliability.
         self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        self.lock_path = "database.lock"
 
         
         # Define a strict system prompt to enforce groundedness and document comparison
@@ -35,6 +38,7 @@ class QueryProcessor:
             ("human", "{question}")
         ])
 
+    @traceable(name="Hybrid RAG Query Stream")
     def stream_query(self, user_question: str):
         """
         Executes the RAG pipeline: Retrieve -> Generate.
@@ -45,30 +49,32 @@ class QueryProcessor:
             yield f"data: {json.dumps({'sources': []})}\n\n"
             return
             
-        # Load the local vector database (FAISS - Semantic)
-        vectorstore = FAISS.load_local(
-            self.vector_store_path, 
-            self.embeddings, 
-            allow_dangerous_deserialization=True
-        )
-        faiss_retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-
-        # Load the BM25 statistical index (BM25 - Keyword)
-        try:
-            with open("bm25_retriever.pkl", 'rb') as f:
-                bm25_retriever = pickle.load(f)
-                
-            # Create the Hybrid Ensemble Retriever (FAISS 60%, BM25 40%)
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[bm25_retriever, faiss_retriever], 
-                weights=[0.4, 0.6]
+        # Acquire lock to ensure we don't read while a background task is saving
+        with FileLock(self.lock_path, timeout=60):
+            # Load the local vector database (FAISS - Semantic)
+            vectorstore = FAISS.load_local(
+                self.vector_store_path, 
+                self.embeddings, 
+                allow_dangerous_deserialization=True
             )
-            # Retrieve top 10 chunks total (5 from each, dynamically ranked)
-            docs = ensemble_retriever.invoke(user_question)
-        except Exception as e:
-            print(f"BM25 fallback failed: {e}")
-            # Fallback to pure FAISS if BM25 is missing
-            docs = faiss_retriever.invoke(user_question)
+            faiss_retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+            # Load the BM25 statistical index (BM25 - Keyword)
+            try:
+                with open("bm25_retriever.pkl", 'rb') as f:
+                    bm25_retriever = pickle.load(f)
+                    
+                # Create the Hybrid Ensemble Retriever (FAISS 60%, BM25 40%)
+                ensemble_retriever = EnsembleRetriever(
+                    retrievers=[bm25_retriever, faiss_retriever], 
+                    weights=[0.4, 0.6]
+                )
+                # Retrieve top 10 chunks total (5 from each, dynamically ranked)
+                docs = ensemble_retriever.invoke(user_question)
+            except Exception as e:
+                print(f"BM25 fallback failed: {e}")
+                # Fallback to pure FAISS if BM25 is missing
+                docs = faiss_retriever.invoke(user_question)
         
         if not docs:
             yield f"data: {json.dumps({'text': 'I couldn\\'t find any relevant information in the uploaded documents.'})}\n\n"

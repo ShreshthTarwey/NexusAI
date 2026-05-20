@@ -1,9 +1,9 @@
 # Engineering Log & Progress Tracker
 
 ## Current Project State
-- Transitioned to **Phase 4: Observability & Tracing**.
-- **Phase 3.5: Production Infrastructure** is completed.
-- **Phase 1, 2, & 3** are completed.
+- Transitioned to **Phase 5: Agentic Routing**.
+- **Phase 4: Observability & Tracing** is completed.
+- **Phase 1, 2, 3 & 3.5** are completed.
 - The fundamental directory structure (`backend/` and `frontend/`) has been initialized.
 - `README.md` and `steps.md` are actively maintained.
 - FastAPI backend configured with an initial file upload API endpoint (`/api/upload`) and CORS.
@@ -30,18 +30,19 @@
 - Upgraded the React frontend (`App.jsx`) to continuously poll the `job_id` status and display real-time async processing updates.
 - Overhauled the `/api/query` endpoint to yield `StreamingResponse` via Server-Sent Events (SSE).
 - Upgraded the React chat UI to decode the `ReadableStream` dynamically, creating a word-by-word typing effect directly from Gemini's generative chain.
+- **Phase 4 (Current):** Integrated LangSmith for enterprise-grade observability.
+- Added `@traceable` decorators to Python backend functions to generate granular execution latency dashboards.
 
 ## Pending Tasks
-- [x] Transition to Phase 3 (Hybrid RAG).
-- [ ] Transition to Phase 4 (Observability & Tracing).
-- [ ] Set up LangSmith or a local logging system to visualize exact token usage, retrieval latency, and agent reasoning traces.
+- [x] Transition to Phase 4 (Observability & Tracing).
+- [ ] Transition to Phase 5 (Agentic Routing).
+- [ ] Integrate LangGraph to introduce conditional logic and routing between simple queries and complex document comparisons.
 
 ## Current Limitations
 - No AI agent (LangGraph) or memory layer is wired up yet.
-- Execution traces and timing metrics are currently invisible to developers.
 
 ## Next Milestone
-- Phase 4: Implement robust observability to see the exact API execution timeline and prompt latency before building out complex multi-agent routing.
+- Phase 5: Implement LangGraph to act as an orchestration layer, routing user questions to different specialized pipelines depending on intent.
 
 ## Changed Files
 - `README.md`
