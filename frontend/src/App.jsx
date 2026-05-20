@@ -68,18 +68,44 @@ function App() {
       }
 
       const data = await res.json();
-      setResponse(data);
-      setStatus('success');
-      // Add initial system message once upload succeeds
-      setMessages([{
-        role: 'assistant',
-        content: `I've successfully ingested the document (${data.chunks} chunks). How can I help you analyze it?`
-      }]);
+      if (data.job_id) {
+        pollUploadStatus(data.job_id);
+      } else {
+        setResponse(data);
+        setStatus('success');
+      }
     } catch (error) {
       console.error("Error uploading file:", error);
       setStatus('error');
       setResponse({ error: error.message });
     }
+  };
+
+  const pollUploadStatus = (jobId) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`http://localhost:8000/api/upload/status/${jobId}`);
+        const data = await res.json();
+        
+        if (data.status === 'success') {
+          clearInterval(interval);
+          setResponse(data);
+          setStatus('success');
+          setMessages([{
+            role: 'assistant',
+            content: `I've successfully ingested the document (${data.chunks} chunks). How can I help you analyze it?`
+          }]);
+        } else if (data.status === 'error') {
+          clearInterval(interval);
+          setStatus('error');
+          setResponse({ error: data.error });
+        }
+      } catch (error) {
+        clearInterval(interval);
+        setStatus('error');
+        setResponse({ error: error.message });
+      }
+    }, 2000);
   };
 
   const handleQuerySubmit = async (e) => {
@@ -98,22 +124,69 @@ function App() {
         body: JSON.stringify({ query: userMessage.content }),
       });
 
-      const data = await res.json();
+      if (!res.ok) throw new Error('Query failed');
 
-      if (data.error) {
-        throw new Error(data.error);
+      // Initialize an empty assistant message
+      setMessages(prev => [...prev, { role: 'assistant', content: '', sources: [] }]);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let buffer = '';
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          
+          // The last element might be an incomplete line, so we keep it in the buffer
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (line.trim().startsWith('data: ')) {
+              try {
+                // Remove 'data: ' prefix
+                const jsonStr = line.replace(/^data:\s*/, '');
+                if (!jsonStr.trim()) continue;
+                
+                const data = JSON.parse(jsonStr);
+                
+                if (data.text) {
+                  setMessages(prev => {
+                    const newMessages = [...prev];
+                    const lastMsgIndex = newMessages.length - 1;
+                    newMessages[lastMsgIndex] = {
+                      ...newMessages[lastMsgIndex],
+                      content: newMessages[lastMsgIndex].content + data.text
+                    };
+                    return newMessages;
+                  });
+                }
+                if (data.sources) {
+                  setMessages(prev => {
+                    const newMessages = [...prev];
+                    const lastMsgIndex = newMessages.length - 1;
+                    newMessages[lastMsgIndex] = {
+                      ...newMessages[lastMsgIndex],
+                      sources: data.sources
+                    };
+                    return newMessages;
+                  });
+                }
+              } catch (e) {
+                console.warn("Failed to parse SSE line:", line, e);
+              }
+            }
+          }
+        }
       }
-
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: data.answer,
-        sources: data.sources || []
-      }]);
     } catch (error) {
       console.error("Query error:", error);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Error: ${error.message}. Please check if the backend is running and GEMINI_API_KEY is configured in .env.`
+        content: `Error: ${error.message}. Please check if the backend is running and GEMINI_API_KEY is configured.`
       }]);
     } finally {
       setIsQuerying(false);
@@ -243,9 +316,10 @@ function App() {
         <div className="orchestration-notice">
           <h3>System Status</h3>
           <p>
-            <strong>Phase 2 Ingestion & RAG Pipeline:</strong> Active. 
-            Documents are parsed into chunks and embedded using HuggingFace embeddings (`all-MiniLM-L6-v2`) in a local FAISS vector store. 
-            Grounded responses are generated via **Gemini 2.5 Flash** (`gemini-2.5-flash`).
+            <strong>Phase 3 Hybrid RAG Pipeline:</strong> Active. 
+            Documents are processed efficiently via PyMuPDF in background tasks. 
+            Hybrid retrieval uses both FAISS (Semantics) and BM25 (Keywords). 
+            Grounded responses stream via SSE from **Gemini 2.5 Flash**.
           </p>
           <p>
             LangGraph state machines and multi-agent hybrid retrieval layers are pending in subsequent phases.

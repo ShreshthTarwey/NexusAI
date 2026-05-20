@@ -2,8 +2,8 @@
 
 ## Current Project State
 - Transitioned to **Phase 4: Observability & Tracing**.
-- **Phase 3: Hybrid RAG** is completed.
-- **Phase 1 & 2** are completed.
+- **Phase 3.5: Production Infrastructure** is completed.
+- **Phase 1, 2, & 3** are completed.
 - The fundamental directory structure (`backend/` and `frontend/`) has been initialized.
 - `README.md` and `steps.md` are actively maintained.
 - FastAPI backend configured with an initial file upload API endpoint (`/api/upload`) and CORS.
@@ -25,6 +25,11 @@
 - Injected strict filename metadata into chunk indexing for precise traceability.
 - Integrated `rank_bm25` to build a local keyword statistical index alongside FAISS.
 - Refactored `QueryProcessor` to use an `EnsembleRetriever` (FAISS 60%, BM25 40%), effectively merging semantic and keyword search, expanding the retrieval limit to 10 chunks to avoid multi-doc comparison blindness.
+- **Phase 3.5 (Current):** Replaced `pypdf` with `pymupdf` for high-speed, robust document extraction.
+- Refactored `main.py` to process uploads asynchronously via FastAPI `BackgroundTasks`, returning a `job_id` to prevent browser timeouts.
+- Upgraded the React frontend (`App.jsx`) to continuously poll the `job_id` status and display real-time async processing updates.
+- Overhauled the `/api/query` endpoint to yield `StreamingResponse` via Server-Sent Events (SSE).
+- Upgraded the React chat UI to decode the `ReadableStream` dynamically, creating a word-by-word typing effect directly from Gemini's generative chain.
 
 ## Pending Tasks
 - [x] Transition to Phase 3 (Hybrid RAG).
