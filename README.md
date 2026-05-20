@@ -49,9 +49,9 @@ NexusAI/
 
 ## Future Roadmap
 - Phase 1: Project Foundation (Completed)
-- Phase 2: Basic Offline RAG Pipeline (Current)
-- Phase 3: Hybrid RAG
-- Phase 4: Observability & Tracing
+- Phase 2: Basic Offline RAG Pipeline (Completed)
+- Phase 3: Hybrid RAG (Completed)
+- Phase 4: Observability & Tracing (Current)
 - Phase 5: Agentic Workflow
 - Phase 6: Reliability & Control Layer
 - Phase 7: Tool Calling Layer

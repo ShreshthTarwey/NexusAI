@@ -1,8 +1,9 @@
 # Engineering Log & Progress Tracker
 
 ## Current Project State
-- Transitioned to **Phase 2: Basic Offline RAG Pipeline**.
-- **Phase 1: Project Foundation** is completed.
+- Transitioned to **Phase 4: Observability & Tracing**.
+- **Phase 3: Hybrid RAG** is completed.
+- **Phase 1 & 2** are completed.
 - The fundamental directory structure (`backend/` and `frontend/`) has been initialized.
 - `README.md` and `steps.md` are actively maintained.
 - FastAPI backend configured with an initial file upload API endpoint (`/api/upload`) and CORS.
@@ -19,21 +20,23 @@
 - Wired the `/api/upload` endpoint to parse PDFs, chunk text using `RecursiveCharacterTextSplitter`, and index it using HuggingFace embeddings (`all-MiniLM-L6-v2`) into a local FAISS vector store.
 - Implemented `QueryProcessor` utilizing Google Gemini (`gemini-2.5-flash`) via `langchain-google-genai` to generate highly reliable, grounded answers from FAISS retrieved chunks.
 - Created `/api/query` POST endpoint utilizing Pydantic schemas (`QueryRequest`) to enforce data structures.
+- **Phase 3 (Current):** Refactored UI and backend endpoints to support batch multi-file uploads for document comparison.
+- Added `/api/clear` endpoint to wipe knowledge base for fresh sessions.
+- Injected strict filename metadata into chunk indexing for precise traceability.
+- Integrated `rank_bm25` to build a local keyword statistical index alongside FAISS.
+- Refactored `QueryProcessor` to use an `EnsembleRetriever` (FAISS 60%, BM25 40%), effectively merging semantic and keyword search, expanding the retrieval limit to 10 chunks to avoid multi-doc comparison blindness.
 
 ## Pending Tasks
-- [x] Connect frontend to backend properly (test the upload flow).
-- [x] Transition to Phase 2 (Basic Offline RAG Pipeline).
-- [x] Build retrieval query endpoint (`/api/query`) to search the FAISS vector store.
-- [x] Wire up basic grounded answer generation using the retrieved context.
-- [x] Connect the React frontend to the `/api/query` endpoint and display answers + sources.
-- [ ] Transition to Phase 3 (Hybrid RAG).
+- [x] Transition to Phase 3 (Hybrid RAG).
+- [ ] Transition to Phase 4 (Observability & Tracing).
+- [ ] Set up LangSmith or a local logging system to visualize exact token usage, retrieval latency, and agent reasoning traces.
 
 ## Current Limitations
-- The vector DB path (`vector_db`) is hardcoded; should be moved to environment config later.
 - No AI agent (LangGraph) or memory layer is wired up yet.
+- Execution traces and timing metrics are currently invisible to developers.
 
 ## Next Milestone
-- Phase 3: Implement BM25 keyword retrieval, hybrid ranking, and query rewriting to improve retrieval quality.
+- Phase 4: Implement robust observability to see the exact API execution timeline and prompt latency before building out complex multi-agent routing.
 
 ## Changed Files
 - `README.md`
@@ -53,3 +56,5 @@
 - Selected `HuggingFaceEmbeddings` with `all-MiniLM-L6-v2` for the initial embedding model to ensure the system can run offline, fast, and completely free without cloud API limits.
 - Selected **Google Gemini 2.5 Flash** (`gemini-2.5-flash`) via `langchain-google-genai` for the generation layer to leverage its massive context, cost-effectiveness, and speed, replacing the initial mock/OpenAI plans.
 - Moved RAG logic into dedicated `DocumentProcessor` and `QueryProcessor` classes in `backend/services/` to keep `main.py` clean, adhering to solid engineering practices.
+- **Phase 3 Design Choice:** Rebuilt the BM25 statistical model on every multi-file upload instead of trying to patch an existing index, favoring reliability and math correctness. 
+- Increased retrieval chunk limit to `k=10` to guarantee cross-document context is retrieved during multi-doc comparison, fully utilizing Gemini's massive 1M context window without risking overflow.

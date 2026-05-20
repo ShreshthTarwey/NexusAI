@@ -1,8 +1,11 @@
 import os
+import shutil
+import pickle
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_community.retrievers import BM25Retriever
 
 class DocumentProcessor:
     """
@@ -12,6 +15,9 @@ class DocumentProcessor:
     """
     def __init__(self, vector_store_path: str = "vector_db"):
         self.vector_store_path = vector_store_path
+        self.corpus_path = "corpus.pkl"
+        self.bm25_path = "bm25_retriever.pkl"
+        
         # Using a highly efficient local embedding model
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         # Initialize text splitter for chunking documents
@@ -21,9 +27,9 @@ class DocumentProcessor:
             add_start_index=True
         )
 
-    def process_pdf(self, file_path: str) -> int:
+    def process_pdf(self, file_path: str, original_filename: str = None) -> int:
         """
-        Loads a PDF, splits it into chunks, and updates/creates the FAISS index.
+        Loads a PDF, injects filename metadata, and updates FAISS + BM25 indices.
         Returns the number of chunks processed.
         """
         # Load the document
@@ -36,9 +42,15 @@ class DocumentProcessor:
         # Split the document into chunks
         chunks = self.text_splitter.split_documents(docs)
 
-        # Create or update the FAISS vector database
+        # Inject original filename into metadata for document comparison traceability
+        if original_filename:
+            for chunk in chunks:
+                chunk.metadata['source_file'] = original_filename
+
+        # ---------------------------------------------------------
+        # 1. FAISS VECTOR INDEXING (Semantic Search)
+        # ---------------------------------------------------------
         if os.path.exists(self.vector_store_path):
-            # Load existing DB and add new chunks
             vectorstore = FAISS.load_local(
                 self.vector_store_path, 
                 self.embeddings, 
@@ -47,8 +59,40 @@ class DocumentProcessor:
             vectorstore.add_documents(chunks)
             vectorstore.save_local(self.vector_store_path)
         else:
-            # Initialize a new FAISS DB
             vectorstore = FAISS.from_documents(chunks, self.embeddings)
             vectorstore.save_local(self.vector_store_path)
 
+        # ---------------------------------------------------------
+        # 2. BM25 STATISTICAL INDEXING (Keyword Search)
+        # ---------------------------------------------------------
+        # BM25 requires the full corpus to calculate TF-IDF. 
+        # We maintain a global corpus list, append new chunks, and rebuild.
+        corpus = []
+        if os.path.exists(self.corpus_path):
+            with open(self.corpus_path, 'rb') as f:
+                corpus = pickle.load(f)
+        
+        corpus.extend(chunks)
+        
+        with open(self.corpus_path, 'wb') as f:
+            pickle.dump(corpus, f)
+            
+        # Rebuild BM25 retriever
+        bm25_retriever = BM25Retriever.from_documents(corpus)
+        # Ensure it returns the same number of chunks as FAISS later
+        bm25_retriever.k = 5 
+        with open(self.bm25_path, 'wb') as f:
+            pickle.dump(bm25_retriever, f)
+
         return len(chunks)
+
+    def clear_database(self):
+        """
+        Wipes the FAISS directory and BM25 local files to clear the context.
+        """
+        if os.path.exists(self.vector_store_path):
+            shutil.rmtree(self.vector_store_path)
+        if os.path.exists(self.corpus_path):
+            os.remove(self.corpus_path)
+        if os.path.exists(self.bm25_path):
+            os.remove(self.bm25_path)
