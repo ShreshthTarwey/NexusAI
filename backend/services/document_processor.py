@@ -6,6 +6,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
+from langsmith import traceable
+from filelock import FileLock
 
 class DocumentProcessor:
     """
@@ -17,6 +19,7 @@ class DocumentProcessor:
         self.vector_store_path = vector_store_path
         self.corpus_path = "corpus.pkl"
         self.bm25_path = "bm25_retriever.pkl"
+        self.lock_path = "database.lock"
         
         # Using a highly efficient local embedding model
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
@@ -27,6 +30,7 @@ class DocumentProcessor:
             add_start_index=True
         )
 
+    @traceable(name="Document Ingestion Pipeline")
     def process_pdf(self, file_path: str, original_filename: str = None) -> int:
         """
         Loads a PDF, injects filename metadata, and updates FAISS + BM25 indices.
@@ -47,46 +51,49 @@ class DocumentProcessor:
             for chunk in chunks:
                 chunk.metadata['source_file'] = original_filename
 
-        # ---------------------------------------------------------
-        # 1. FAISS VECTOR INDEXING (Semantic Search)
-        # ---------------------------------------------------------
-        if os.path.exists(self.vector_store_path):
-            vectorstore = FAISS.load_local(
-                self.vector_store_path, 
-                self.embeddings, 
-                allow_dangerous_deserialization=True
-            )
-            vectorstore.add_documents(chunks)
-            vectorstore.save_local(self.vector_store_path)
-        else:
-            vectorstore = FAISS.from_documents(chunks, self.embeddings)
-            vectorstore.save_local(self.vector_store_path)
+        # Wrap the disk writes in a FileLock to prevent race conditions 
+        # when multiple files are uploaded concurrently.
+        with FileLock(self.lock_path, timeout=120):
+            # ---------------------------------------------------------
+            # 1. FAISS VECTOR INDEXING (Semantic Search)
+            # ---------------------------------------------------------
+            if os.path.exists(self.vector_store_path):
+                vectorstore = FAISS.load_local(
+                    self.vector_store_path, 
+                    self.embeddings, 
+                    allow_dangerous_deserialization=True
+                )
+                vectorstore.add_documents(chunks)
+                vectorstore.save_local(self.vector_store_path)
+            else:
+                vectorstore = FAISS.from_documents(chunks, self.embeddings)
+                vectorstore.save_local(self.vector_store_path)
 
-        # ---------------------------------------------------------
-        # 2. BM25 STATISTICAL INDEXING (Keyword Search)
-        # ---------------------------------------------------------
-        # BM25 requires the full corpus to calculate TF-IDF. 
-        # We maintain a global corpus list, append new chunks, and rebuild.
-        corpus = []
-        if os.path.exists(self.corpus_path):
-            try:
-                with open(self.corpus_path, 'rb') as f:
-                    corpus = pickle.load(f)
-            except Exception as e:
-                print(f"Warning: Failed to load existing corpus, starting fresh. Error: {e}")
-                corpus = []
-        
-        corpus.extend(chunks)
-        
-        with open(self.corpus_path, 'wb') as f:
-            pickle.dump(corpus, f)
+            # ---------------------------------------------------------
+            # 2. BM25 STATISTICAL INDEXING (Keyword Search)
+            # ---------------------------------------------------------
+            # BM25 requires the full corpus to calculate TF-IDF. 
+            # We maintain a global corpus list, append new chunks, and rebuild.
+            corpus = []
+            if os.path.exists(self.corpus_path):
+                try:
+                    with open(self.corpus_path, 'rb') as f:
+                        corpus = pickle.load(f)
+                except Exception as e:
+                    print(f"Warning: Failed to load existing corpus, starting fresh. Error: {e}")
+                    corpus = []
             
-        # Rebuild BM25 retriever
-        bm25_retriever = BM25Retriever.from_documents(corpus)
-        # Ensure it returns the same number of chunks as FAISS later
-        bm25_retriever.k = 5 
-        with open(self.bm25_path, 'wb') as f:
-            pickle.dump(bm25_retriever, f)
+            corpus.extend(chunks)
+            
+            with open(self.corpus_path, 'wb') as f:
+                pickle.dump(corpus, f)
+                
+            # Rebuild BM25 retriever
+            bm25_retriever = BM25Retriever.from_documents(corpus)
+            # Ensure it returns the same number of chunks as FAISS later
+            bm25_retriever.k = 5 
+            with open(self.bm25_path, 'wb') as f:
+                pickle.dump(bm25_retriever, f)
 
         return len(chunks)
 
@@ -94,9 +101,10 @@ class DocumentProcessor:
         """
         Wipes the FAISS directory and BM25 local files to clear the context.
         """
-        if os.path.exists(self.vector_store_path):
-            shutil.rmtree(self.vector_store_path)
-        if os.path.exists(self.corpus_path):
-            os.remove(self.corpus_path)
-        if os.path.exists(self.bm25_path):
-            os.remove(self.bm25_path)
+        with FileLock(self.lock_path, timeout=60):
+            if os.path.exists(self.vector_store_path):
+                shutil.rmtree(self.vector_store_path)
+            if os.path.exists(self.corpus_path):
+                os.remove(self.corpus_path)
+            if os.path.exists(self.bm25_path):
+                os.remove(self.bm25_path)
