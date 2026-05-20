@@ -6,7 +6,7 @@ langchain
 langchain-community
 langchain-huggingface
 faiss-cpu
-pypdf
+pymupdf
 sentence-transformers
 langchain-openai
 openai

@@ -1,5 +1,6 @@
 import os
 import pickle
+import json
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import FAISS
@@ -34,16 +35,15 @@ class QueryProcessor:
             ("human", "{question}")
         ])
 
-    def query(self, user_question: str) -> dict:
+    def stream_query(self, user_question: str):
         """
         Executes the RAG pipeline: Retrieve -> Generate.
-        Returns the answer and the exact source chunks for traceability.
+        Yields the answer chunk-by-chunk in SSE format, followed by sources.
         """
         if not os.path.exists(self.vector_store_path):
-            return {
-                "answer": "No documents have been ingested yet. Please upload a document first.", 
-                "sources": []
-            }
+            yield f"data: {json.dumps({'text': 'No documents have been ingested yet. Please upload a document first.'})}\n\n"
+            yield f"data: {json.dumps({'sources': []})}\n\n"
+            return
             
         # Load the local vector database (FAISS - Semantic)
         vectorstore = FAISS.load_local(
@@ -71,10 +71,9 @@ class QueryProcessor:
             docs = faiss_retriever.invoke(user_question)
         
         if not docs:
-            return {
-                "answer": "I couldn't find any relevant information in the uploaded documents.", 
-                "sources": []
-            }
+            yield f"data: {json.dumps({'text': 'I couldn\\'t find any relevant information in the uploaded documents.'})}\n\n"
+            yield f"data: {json.dumps({'sources': []})}\n\n"
+            return
 
         # Combine document content to form the context block, including metadata!
         context_blocks = []
@@ -85,12 +84,9 @@ class QueryProcessor:
             
         context_text = "\n\n---\n\n".join(context_blocks)
         
-        # Create and execute the generation chain
-        chain = self.prompt_template | self.llm
-        response = chain.invoke({"context": context_text, "question": user_question})
-        
+
         # Format sources to return to the frontend for observability
-        sources = [
+        sources_list = [
             {
                 "content": doc.page_content,
                 "metadata": doc.metadata
@@ -98,7 +94,12 @@ class QueryProcessor:
             for doc in docs
         ]
         
-        return {
-            "answer": response.content,
-            "sources": sources
-        }
+        # Create and execute the generation chain
+        chain = self.prompt_template | self.llm
+        
+        # Stream the LLM response word-by-word
+        for chunk in chain.stream({"context": context_text, "question": user_question}):
+            yield f"data: {json.dumps({'text': chunk.content})}\n\n"
+            
+        # Finally, append the sources payload
+        yield f"data: {json.dumps({'sources': sources_list})}\n\n"

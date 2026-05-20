@@ -1,7 +1,7 @@
 import os
 import shutil
 import pickle
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -32,8 +32,8 @@ class DocumentProcessor:
         Loads a PDF, injects filename metadata, and updates FAISS + BM25 indices.
         Returns the number of chunks processed.
         """
-        # Load the document
-        loader = PyPDFLoader(file_path)
+        # Load the document using PyMuPDF for better text extraction
+        loader = PyMuPDFLoader(file_path)
         docs = loader.load()
 
         if not docs:
@@ -69,8 +69,12 @@ class DocumentProcessor:
         # We maintain a global corpus list, append new chunks, and rebuild.
         corpus = []
         if os.path.exists(self.corpus_path):
-            with open(self.corpus_path, 'rb') as f:
-                corpus = pickle.load(f)
+            try:
+                with open(self.corpus_path, 'rb') as f:
+                    corpus = pickle.load(f)
+            except Exception as e:
+                print(f"Warning: Failed to load existing corpus, starting fresh. Error: {e}")
+                corpus = []
         
         corpus.extend(chunks)
         
