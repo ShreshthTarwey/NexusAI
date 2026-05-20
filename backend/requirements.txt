@@ -11,4 +11,4 @@ sentence-transformers
 langchain-openai
 openai
 langchain-google-genai
-
+rank_bm25
