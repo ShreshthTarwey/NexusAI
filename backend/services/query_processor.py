@@ -38,6 +38,57 @@ class QueryProcessor:
             ("human", "{question}")
         ])
 
+    def retrieve_documents(self, user_question: str, k: int = 5) -> list:
+        """
+        Loads FAISS and BM25 indices, constructs an EnsembleRetriever,
+        and retrieves relevant document chunks.
+        """
+        if not os.path.exists(self.vector_store_path):
+            return []
+            
+        # Acquire lock to ensure we don't read while a background task is saving
+        with FileLock(self.lock_path, timeout=60):
+            # Load the local vector database (FAISS - Semantic)
+            vectorstore = FAISS.load_local(
+                self.vector_store_path, 
+                self.embeddings, 
+                allow_dangerous_deserialization=True
+            )
+            faiss_retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+
+            # Load the BM25 statistical index (BM25 - Keyword)
+            try:
+                with open("bm25_retriever.pkl", 'rb') as f:
+                    bm25_retriever = pickle.load(f)
+                
+                # Make sure retrieval limits match the requested 'k'
+                bm25_retriever.k = k
+                    
+                # Create the Hybrid Ensemble Retriever (FAISS 60%, BM25 40%)
+                ensemble_retriever = EnsembleRetriever(
+                    retrievers=[bm25_retriever, faiss_retriever], 
+                    weights=[0.4, 0.6]
+                )
+                # Retrieve top chunks dynamically ranked
+                docs = ensemble_retriever.invoke(user_question)
+            except Exception as e:
+                print(f"BM25 fallback failed: {e}")
+                # Fallback to pure FAISS if BM25 is missing
+                docs = faiss_retriever.invoke(user_question)
+        return docs
+
+    def format_context(self, docs: list) -> str:
+        """
+        Formats list of retrieved document chunks into a structured context block.
+        """
+        context_blocks = []
+        for doc in docs:
+            filename = doc.metadata.get('source_file', 'Unknown Document')
+            page = doc.metadata.get('page', 'Unknown Page')
+            context_blocks.append(f"[Source: {filename}, Page: {page}]\n{doc.page_content}")
+            
+        return "\n\n---\n\n".join(context_blocks)
+
     @traceable(name="Hybrid RAG Query Stream")
     def stream_query(self, user_question: str):
         """
@@ -49,46 +100,14 @@ class QueryProcessor:
             yield f"data: {json.dumps({'sources': []})}\n\n"
             return
             
-        # Acquire lock to ensure we don't read while a background task is saving
-        with FileLock(self.lock_path, timeout=60):
-            # Load the local vector database (FAISS - Semantic)
-            vectorstore = FAISS.load_local(
-                self.vector_store_path, 
-                self.embeddings, 
-                allow_dangerous_deserialization=True
-            )
-            faiss_retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-
-            # Load the BM25 statistical index (BM25 - Keyword)
-            try:
-                with open("bm25_retriever.pkl", 'rb') as f:
-                    bm25_retriever = pickle.load(f)
-                    
-                # Create the Hybrid Ensemble Retriever (FAISS 60%, BM25 40%)
-                ensemble_retriever = EnsembleRetriever(
-                    retrievers=[bm25_retriever, faiss_retriever], 
-                    weights=[0.4, 0.6]
-                )
-                # Retrieve top 10 chunks total (5 from each, dynamically ranked)
-                docs = ensemble_retriever.invoke(user_question)
-            except Exception as e:
-                print(f"BM25 fallback failed: {e}")
-                # Fallback to pure FAISS if BM25 is missing
-                docs = faiss_retriever.invoke(user_question)
+        docs = self.retrieve_documents(user_question, k=5)
         
         if not docs:
             yield f"data: {json.dumps({'text': 'I couldn\\'t find any relevant information in the uploaded documents.'})}\n\n"
             yield f"data: {json.dumps({'sources': []})}\n\n"
             return
 
-        # Combine document content to form the context block, including metadata!
-        context_blocks = []
-        for doc in docs:
-            filename = doc.metadata.get('source_file', 'Unknown Document')
-            page = doc.metadata.get('page', 'Unknown Page')
-            context_blocks.append(f"[Source: {filename}, Page: {page}]\n{doc.page_content}")
-            
-        context_text = "\n\n---\n\n".join(context_blocks)
+        context_text = self.format_context(docs)
         
 
         # Format sources to return to the frontend for observability

@@ -10,6 +10,8 @@ import shutil
 import tempfile
 from services.document_processor import DocumentProcessor
 from services.query_processor import QueryProcessor
+from services.agent_orchestrator import AgentOrchestrator
+import json
 
 # Load environment variables
 load_dotenv()
@@ -123,11 +125,37 @@ class QueryRequest(BaseModel):
 @app.post("/api/query")
 async def query_document(request: QueryRequest):
     """
-    Retrieves relevant context from the vector database and 
-    streams a grounded response using SSE.
+    Routes the query through the LangGraph Agentic Router state machine,
+    streaming LLM tokens and sources using SSE.
     """
     try:
-        processor = QueryProcessor(vector_store_path="vector_db")
-        return StreamingResponse(processor.stream_query(request.query), media_type="text/event-stream")
+        orchestrator = AgentOrchestrator(vector_store_path="vector_db")
+        
+        async def event_generator():
+            try:
+                streamed_any = False
+                # We consume node and runnable execution events in real-time
+                async for event in orchestrator.graph.astream_events({"query": request.query}, version="v2"):
+                    kind = event["event"]
+                    # Stream chat model chunks word-by-word
+                    if kind == "on_chat_model_stream":
+                        token = event["data"]["chunk"].content
+                        if token:
+                            streamed_any = True
+                            yield f"data: {json.dumps({'text': token})}\n\n"
+                    # Capture the final RAG nodes to send sources to the UI
+                    elif kind == "on_chain_end" and event["name"] in ["execute_simple_rag", "execute_compare_rag"]:
+                        output = event["data"]["output"]
+                        if isinstance(output, dict):
+                            # Fallback: if we haven't streamed any tokens, send the answer block directly
+                            if not streamed_any and "answer" in output:
+                                yield f"data: {json.dumps({'text': output['answer']})}\n\n"
+                            if "sources" in output:
+                                yield f"data: {json.dumps({'sources': output['sources']})}\n\n"
+            except Exception as stream_err:
+                print(f"Error during stream generation: {stream_err}")
+                yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
     except Exception as e:
         return {"error": str(e)}
