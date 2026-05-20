@@ -1,6 +1,254 @@
 import { useState, useRef, useEffect } from 'react';
 import './index.css';
 
+// Robust stateful Markdown parser for block elements (headers, lists with nested indents, tables, code blocks, blockquotes, and paragraphs)
+const MarkdownRenderer = ({ content }) => {
+  if (!content) return null;
+
+  const lines = content.split('\n');
+  const elements = [];
+  
+  let currentBlock = null; 
+  // Can be: 
+  // { type: 'paragraph', lines: [] }
+  // { type: 'list', listType: 'ul'|'ol', items: [] } (items: { text, indent }[])
+  // { type: 'table', rows: [] }
+  // { type: 'code', lang: '', lines: [] }
+  // { type: 'blockquote', lines: [] }
+
+  const flushCurrentBlock = (key) => {
+    if (!currentBlock) return;
+
+    if (currentBlock.type === 'paragraph') {
+      elements.push(
+        <p key={key} className="markdown-paragraph">
+          {currentBlock.lines.map((line, lIdx) => (
+            <span key={lIdx}>
+              {lIdx > 0 && <br />}
+              {parseInlineMarkdown(line)}
+            </span>
+          ))}
+        </p>
+      );
+    } else if (currentBlock.type === 'blockquote') {
+      elements.push(
+        <blockquote key={key} className="markdown-blockquote">
+          {currentBlock.lines.map((line, lIdx) => (
+            <div key={lIdx}>{parseInlineMarkdown(line)}</div>
+          ))}
+        </blockquote>
+      );
+    } else if (currentBlock.type === 'code') {
+      elements.push(
+        <pre key={key} className="markdown-code-block">
+          <code>{currentBlock.lines.join('\n')}</code>
+        </pre>
+      );
+    } else if (currentBlock.type === 'list') {
+      const ListTag = currentBlock.listType;
+      elements.push(
+        <ListTag key={key} className={`markdown-list-${currentBlock.listType}`}>
+          {currentBlock.items.map((item, i) => {
+            // Determine indent level based on spaces (e.g. 2 or 4 spaces = 1 indent level)
+            const level = item.indent >= 4 ? 2 : item.indent >= 2 ? 1 : 0;
+            const indentStyle = level > 0 ? { marginLeft: `${level * 1.25}rem` } : {};
+            
+            return (
+              <li 
+                key={i} 
+                className={`markdown-list-item indent-${level}`} 
+                style={{
+                  ...indentStyle,
+                  listStyleType: level === 0 ? 'disc' : level === 1 ? 'circle' : 'square'
+                }}
+              >
+                {parseInlineMarkdown(item.text)}
+              </li>
+            );
+          })}
+        </ListTag>
+      );
+    } else if (currentBlock.type === 'table') {
+      const rows = currentBlock.rows;
+      if (rows.length >= 2) {
+        // Find clean headers
+        const headerCells = rows[0].split('|').map(c => c.trim()).filter((c, idx, arr) => {
+          if (idx === 0 && c === '') return false;
+          if (idx === arr.length - 1 && c === '') return false;
+          return true;
+        });
+
+        // Filter and clean rows, skipping separator rows (containing dashed dividers)
+        const bodyRows = rows.slice(1)
+          .filter(r => !r.includes('---'))
+          .map(r => 
+            r.split('|').map(c => c.trim()).filter((c, idx, arr) => {
+              if (idx === 0 && c === '') return false;
+              if (idx === arr.length - 1 && c === '') return false;
+              return true;
+            })
+          );
+        
+        elements.push(
+          <div className="table-responsive" key={key}>
+            <table className="comparison-table">
+              <thead>
+                <tr>
+                  {headerCells.map((cell, idx) => (
+                    <th key={idx}>{parseInlineMarkdown(cell)}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {bodyRows.map((row, rIdx) => (
+                  <tr key={rIdx}>
+                    {row.map((cell, cIdx) => (
+                      <td key={cIdx}>{parseInlineMarkdown(cell)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+    }
+
+    currentBlock = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // 1. Fenced Code Block
+    if (trimmed.startsWith('```')) {
+      if (currentBlock && currentBlock.type === 'code') {
+        flushCurrentBlock(`code-${i}`);
+      } else {
+        flushCurrentBlock(`pre-code-${i}`);
+        const lang = trimmed.slice(3).trim();
+        currentBlock = { type: 'code', lang, lines: [] };
+      }
+      continue;
+    }
+
+    if (currentBlock && currentBlock.type === 'code') {
+      currentBlock.lines.push(line);
+      continue;
+    }
+
+    // 2. Empty Line
+    if (!trimmed) {
+      flushCurrentBlock(`empty-${i}`);
+      continue;
+    }
+
+    // 3. Headers
+    if (trimmed.startsWith('#')) {
+      const match = trimmed.match(/^(#{1,6})\s+(.*)$/);
+      if (match) {
+        flushCurrentBlock(`header-pre-${i}`);
+        const level = match[1].length;
+        const text = match[2];
+        const Tag = `h${level}`;
+        elements.push(
+          <Tag key={`h-${i}`} className={`markdown-h${level}`}>
+            {parseInlineMarkdown(text)}
+          </Tag>
+        );
+        continue;
+      }
+    }
+
+    // 4. Blockquotes
+    if (trimmed.startsWith('>')) {
+      const text = trimmed.slice(1).trim();
+      if (currentBlock && currentBlock.type === 'blockquote') {
+        currentBlock.lines.push(text);
+      } else {
+        flushCurrentBlock(`quote-pre-${i}`);
+        currentBlock = { type: 'blockquote', lines: [text] };
+      }
+      continue;
+    }
+
+    // 5. Tables
+    if (trimmed.startsWith('|')) {
+      if (currentBlock && currentBlock.type === 'table') {
+        currentBlock.rows.push(line);
+      } else {
+        flushCurrentBlock(`table-pre-${i}`);
+        currentBlock = { type: 'table', rows: [line] };
+      }
+      continue;
+    }
+
+    // 6. Bullet Lists
+    const bulletMatch = line.match(/^(\s*)[\*\-\+]\s+(.*)$/);
+    if (bulletMatch) {
+      const indent = bulletMatch[1].length;
+      const text = bulletMatch[2];
+      if (currentBlock && currentBlock.type === 'list' && currentBlock.listType === 'ul') {
+        currentBlock.items.push({ text, indent });
+      } else {
+        flushCurrentBlock(`list-pre-${i}`);
+        currentBlock = { type: 'list', listType: 'ul', items: [{ text, indent }] };
+      }
+      continue;
+    }
+
+    // 7. Numbered Lists
+    const numMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
+    if (numMatch) {
+      const indent = numMatch[1].length;
+      const text = numMatch[3];
+      if (currentBlock && currentBlock.type === 'list' && currentBlock.listType === 'ol') {
+        currentBlock.items.push({ text, indent });
+      } else {
+        flushCurrentBlock(`list-pre-${i}`);
+        currentBlock = { type: 'list', listType: 'ol', items: [{ text, indent }] };
+      }
+      continue;
+    }
+
+    // 8. Paragraph (fallback)
+    if (currentBlock && currentBlock.type === 'paragraph') {
+      currentBlock.lines.push(line);
+    } else {
+      flushCurrentBlock(`para-pre-${i}`);
+      currentBlock = { type: 'paragraph', lines: [line] };
+    }
+  }
+
+  flushCurrentBlock('final');
+
+  return <div className="markdown-body">{elements}</div>;
+};
+
+// Helper to parse inline markdown (bold, code, links)
+const parseInlineMarkdown = (text) => {
+  if (!text) return '';
+  const regex = /(\*\*.*?\*\*|`.*?`|\[.*?\]\(.*?\))/g;
+  const parts = text.split(regex);
+
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index} style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={index} className="inline-code">{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith('[') && part.includes('](') && part.endsWith(')')) {
+      const match = part.match(/^\[(.*?)\]\((.*?)\)$/);
+      if (match) {
+        return <a key={index} href={match[2]} target="_blank" rel="noopener noreferrer" className="markdown-link">{match[1]}</a>;
+      }
+    }
+    return part;
+  });
+};
+
 function App() {
   const [files, setFiles] = useState([]);
   const [status, setStatus] = useState('idle'); // idle, uploading, success, error
@@ -274,17 +522,28 @@ function App() {
             <div className="chat-messages">
               {messages.map((msg, index) => (
                 <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}>
-                  <div>{msg.content}</div>
+                  <MarkdownRenderer content={msg.content} />
                   
                   {/* Display Sources if available (for traceability) */}
                   {msg.sources && msg.sources.length > 0 && (
                     <div className="sources-container">
-                      <div style={{ marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Retrieved Contexts:</div>
-                      {msg.sources.map((src, idx) => (
-                        <span key={idx} className="source-badge" title={src.content}>
-                          {src.metadata?.source_file || 'Unknown'} (Page {src.metadata?.page !== undefined ? src.metadata.page : '?'})
-                        </span>
-                      ))}
+                      <div style={{ marginBottom: '0.5rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Retrieved Contexts:</div>
+                      <div className="sources-list">
+                        {msg.sources.map((src, idx) => {
+                          const pageVal = src.metadata?.page;
+                          const hasValidPage = pageVal !== undefined && 
+                                               pageVal !== null && 
+                                               pageVal !== '?' && 
+                                               pageVal !== 'Unknown' && 
+                                               !isNaN(Number(pageVal));
+                          return (
+                            <span key={idx} className="source-badge" title={src.content}>
+                              {src.metadata?.source_file || 'Unknown'}
+                              {hasValidPage ? ` (Page ${Number(pageVal) + 1})` : ''}
+                            </span>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
                 </div>

@@ -1,7 +1,7 @@
 import os
 import shutil
 import pickle
-from langchain_community.document_loaders import PyMuPDFLoader
+from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -31,17 +31,27 @@ class DocumentProcessor:
         )
 
     @traceable(name="Document Ingestion Pipeline")
-    def process_pdf(self, file_path: str, original_filename: str = None) -> int:
+    def process_document(self, file_path: str, original_filename: str = None) -> int:
         """
-        Loads a PDF, injects filename metadata, and updates FAISS + BM25 indices.
+        Loads a document (PDF, Markdown, Text), injects filename metadata, 
+        and updates FAISS + BM25 indices.
         Returns the number of chunks processed.
         """
-        # Load the document using PyMuPDF for better text extraction
-        loader = PyMuPDFLoader(file_path)
+        # Determine the file type based on original_filename or file_path suffix
+        filename_to_check = original_filename or file_path
+        _, ext = os.path.splitext(filename_to_check.lower())
+
+        if ext == ".pdf":
+            loader = PyMuPDFLoader(file_path)
+        elif ext in [".md", ".markdown", ".txt"]:
+            loader = TextLoader(file_path, encoding='utf-8')
+        else:
+            raise ValueError(f"Unsupported file format: {ext}")
+
         docs = loader.load()
 
         if not docs:
-            raise ValueError("No text could be extracted from the PDF.")
+            raise ValueError("No text could be extracted from the document.")
 
         # Split the document into chunks
         chunks = self.text_splitter.split_documents(docs)
@@ -96,6 +106,12 @@ class DocumentProcessor:
                 pickle.dump(bm25_retriever, f)
 
         return len(chunks)
+
+    def process_pdf(self, file_path: str, original_filename: str = None) -> int:
+        """
+        Backward compatibility wrapper mapping to the generic process_document method.
+        """
+        return self.process_document(file_path, original_filename)
 
     def clear_database(self):
         """

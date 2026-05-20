@@ -27,8 +27,29 @@ class AgentOrchestrator:
         self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
         self.query_processor = QueryProcessor(vector_store_path=vector_store_path)
         
-        # Bind structured output to our Router schema
-        self.router_llm = self.llm.with_structured_output(RouterDecision)
+        # Check for Groq API Key and activate resilience layer
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if groq_api_key:
+            try:
+                from langchain_groq import ChatGroq
+                groq_router = ChatGroq(model="llama-3.1-8b-instant", temperature=0, groq_api_key=groq_api_key)
+                groq_generator = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key)
+                
+                # Bind structured output to our Router schema for Groq fallback
+                groq_router_structured = groq_router.with_structured_output(RouterDecision)
+                
+                self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]}).with_fallbacks([groq_router_structured])
+                self.generation_llm = self.llm.with_fallbacks([groq_generator])
+                print("NexusAI Resilience Layer: Groq fallback models successfully initialized.")
+            except Exception as e:
+                print(f"NexusAI Resilience Layer Warning: Failed to initialize Groq fallback models ({e}). Defaulting to Gemini alone.")
+                self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]})
+                self.generation_llm = self.llm
+        else:
+            print("NexusAI Resilience Layer Warning: GROQ_API_KEY is not defined in the environment. Defaulting to Gemini alone.")
+            self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]})
+            self.generation_llm = self.llm
+
         
         # Build the graph workflow
         workflow = StateGraph(AgentState)
@@ -91,7 +112,7 @@ class AgentOrchestrator:
             return {"answer": "I couldn't find any relevant information in the uploaded documents.", "sources": []}
             
         context_text = self.query_processor.format_context(docs)
-        chain = self.query_processor.prompt_template | self.llm
+        chain = self.query_processor.prompt_template | self.generation_llm.with_config({"tags": ["generator"]})
         
         full_content = ""
         # Stream chunks internally to trigger on_chat_model_stream events
@@ -128,7 +149,7 @@ class AgentOrchestrator:
             ("human", "{question}")
         ])
         
-        chain = comparison_prompt | self.llm
+        chain = comparison_prompt | self.generation_llm.with_config({"tags": ["generator"]})
         
         full_content = ""
         # Stream chunks internally to trigger on_chat_model_stream events

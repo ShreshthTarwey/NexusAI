@@ -15,3 +15,5 @@ rank_bm25
 langsmith
 filelock
 langgraph
+langchain-groq
+

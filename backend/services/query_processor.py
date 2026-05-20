@@ -5,7 +5,13 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.retrievers import EnsembleRetriever
+try:
+    from langchain.retrievers import EnsembleRetriever
+except ImportError:
+    try:
+        from langchain_classic.retrievers import EnsembleRetriever
+    except ImportError:
+        from langchain_community.retrievers import EnsembleRetriever
 from langsmith import traceable
 from filelock import FileLock
 
@@ -21,7 +27,23 @@ class QueryProcessor:
         
         # Initialize Gemini Chat Model (gemini-2.5-flash is fast, accurate, and cost-effective)
         # We set temperature to 0 to maximize determinism and reliability.
-        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        gemini_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        
+        # Check for Groq API Key and activate resilience layer
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if groq_api_key:
+            try:
+                from langchain_groq import ChatGroq
+                groq_generator = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key)
+                self.llm = gemini_llm.with_fallbacks([groq_generator])
+                print("NexusAI Query Processor Resilience: Groq generation fallback successfully initialized.")
+            except Exception as e:
+                print(f"NexusAI Query Processor Warning: Failed to initialize Groq fallback ({e}). Defaulting to Gemini alone.")
+                self.llm = gemini_llm
+        else:
+            print("NexusAI Query Processor Warning: GROQ_API_KEY is not defined in the environment. Defaulting to Gemini alone.")
+            self.llm = gemini_llm
+            
         self.lock_path = "database.lock"
 
         
@@ -103,7 +125,7 @@ class QueryProcessor:
         docs = self.retrieve_documents(user_question, k=5)
         
         if not docs:
-            yield f"data: {json.dumps({'text': 'I couldn\\'t find any relevant information in the uploaded documents.'})}\n\n"
+            yield f"data: {json.dumps({'text': "I couldn't find any relevant information in the uploaded documents."})}\n\n"
             yield f"data: {json.dumps({'sources': []})}\n\n"
             return
 

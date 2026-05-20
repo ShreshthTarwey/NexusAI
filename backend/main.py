@@ -50,7 +50,7 @@ def process_upload_task(job_id: str, file_paths_and_names: list):
         
         for temp_path, original_filename in file_paths_and_names:
             try:
-                num_chunks = processor.process_pdf(temp_path, original_filename=original_filename)
+                num_chunks = processor.process_document(temp_path, original_filename=original_filename)
                 total_chunks += num_chunks
                 filenames.append(original_filename)
             finally:
@@ -81,8 +81,9 @@ async def upload_document(background_tasks: BackgroundTasks, files: List[UploadF
     
     try:
         for file in files:
-            # Save file to a temporary location for processing
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+            # Preserve original extension when creating temp file
+            _, ext = os.path.splitext(file.filename.lower())
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
                 shutil.copyfileobj(file.file, temp_file)
                 file_paths_and_names.append((temp_file.name, file.filename))
                 
@@ -137,12 +138,13 @@ async def query_document(request: QueryRequest):
                 # We consume node and runnable execution events in real-time
                 async for event in orchestrator.graph.astream_events({"query": request.query}, version="v2"):
                     kind = event["event"]
-                    # Stream chat model chunks word-by-word
                     if kind == "on_chat_model_stream":
-                        token = event["data"]["chunk"].content
-                        if token:
-                            streamed_any = True
-                            yield f"data: {json.dumps({'text': token})}\n\n"
+                        # Only stream tokens from models tagged as 'generator' to prevent routing leak
+                        if "generator" in event.get("tags", []):
+                            token = event["data"]["chunk"].content
+                            if token:
+                                streamed_any = True
+                                yield f"data: {json.dumps({'text': token})}\n\n"
                     # Capture the final RAG nodes to send sources to the UI
                     elif kind == "on_chain_end" and event["name"] in ["execute_simple_rag", "execute_compare_rag"]:
                         output = event["data"]["output"]

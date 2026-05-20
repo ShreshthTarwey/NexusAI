@@ -34,6 +34,12 @@
 - Added `@traceable` decorators to Python backend functions to generate granular execution latency dashboards.
 - **Phase 5 (Current):** Integrated LangGraph for Agentic Routing.
 - Implemented state-machine routing (`AgentOrchestrator`) utilizing structured Pydantic classifications to steer query executions into specialized single-document RAG vs. multi-document comparison paths.
+- **Bug Fix (Startup Error):** Resolved a server startup crash (`ImportError` on `EnsembleRetriever` from `langchain_community.retrievers`) by introducing a robust, version-agnostic import block (falling back from `langchain.retrievers` -> `langchain_classic.retrievers` -> `langchain_community.retrievers`) ensuring immediate compatibility with modern LangChain structures.
+- **UI/UX & Routing Stream Overhaul:**
+  - Upgraded the React chat UI with a custom stateful block-Markdown parser (`MarkdownRenderer`) that parses line-by-line rather than splitting blindly, enabling proper formatting of headers, paragraphs, nested bullet lists (tracking 2/4-space indent levels), code blocks, blockquotes, and comparison tables.
+  - Upgraded `index.css` with premium CSS styles for headers, lists, code panels, and comparison tables using modern typography, glassmorphism, responsive alignment, and sleek neon accents.
+  - Fixed the metadata display inconsistency where non-PDF documents (Markdown and Text files) showed broken `(Page ?)` markers by implementing a robust numeric page validation check in `App.jsx` that hides the page count completely when it is missing or invalid.
+  - Reinforced routing token containment within `backend/main.py` by filtering the LangGraph stream strictly on the `"generator"` event tag to drop router classification chunks (such as `{"route": "compare_rag"}`) in real time, preventing them from leaking into the user's UI.
 
 ## Pending Tasks
 - [x] Transition to Phase 5 (Agentic Routing).
