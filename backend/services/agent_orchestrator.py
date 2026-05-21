@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Dict
+from typing import TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph, START, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -11,68 +11,124 @@ class RouterDecision(BaseModel):
         description="The classification of the user request. MUST be either 'simple_rag' (if the query is asking about a single document, simple fact retrieval, or single-source information) or 'compare_rag' (if the query involves comparing/contrasting multiple documents, cross-referencing files, or synthesizing a summary/comparison matrix across files)."
     )
 
+class GuardrailDecision(BaseModel):
+    is_valid: bool = Field(
+        description="True if the query is asking about documents, data, interview prep, files, companies, or something related to uploaded knowledge. False if it is a general knowledge question entirely unrelated to the system's purpose (e.g., 'What is the capital of France?')."
+    )
+
+class GraderDecision(BaseModel):
+    is_relevant: bool = Field(
+        description="True if the provided documents contain relevant information to answer the query. False if they are completely irrelevant to the user's question."
+    )
+
 class AgentState(TypedDict):
     query: str
     original_query: str
     route: str
     answer: str
     sources: List[Dict]
+    documents: List[Any]
     chat_history: str
+    retries: int
+    grader_retry: bool
 
 class AgentOrchestrator:
     """
     Orchestration layer that manages state and routes user queries using LangGraph.
-    Differentiates between simple single-document retrieval and complex cross-file comparisons.
+    Now enhanced with a Reliability & Control Layer (Guardrails & Self-Correction).
     """
     def __init__(self, session_id: str = "default"):
         self.session_id = session_id
-        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, max_retries=0)
         self.query_processor = QueryProcessor(session_id=session_id)
         
-        # Check for Groq API Key and activate resilience layer
+        # Check for Groq API Keys and activate resilience layer
         groq_api_key = os.getenv("GROQ_API_KEY")
+        groq_api_key2 = os.getenv("GROQ_API_KEY2")
+        
         if groq_api_key:
             try:
                 from langchain_groq import ChatGroq
-                groq_router = ChatGroq(model="llama-3.1-8b-instant", temperature=0, groq_api_key=groq_api_key)
-                groq_generator = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key)
+                fallbacks_router = []
+                fallbacks_guardrail = []
+                fallbacks_grader = []
+                self.groq_generators = []
                 
-                # Bind structured output to our Router schema for Groq fallback
-                groq_router_structured = groq_router.with_structured_output(RouterDecision)
+                # Primary Groq Fallback
+                groq_router_1 = ChatGroq(model="llama-3.1-8b-instant", temperature=0, groq_api_key=groq_api_key, max_retries=0)
+                groq_generator_1 = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key, max_retries=0)
+                fallbacks_router.append(groq_router_1.with_structured_output(RouterDecision))
+                fallbacks_guardrail.append(groq_router_1.with_structured_output(GuardrailDecision))
+                fallbacks_grader.append(groq_router_1.with_structured_output(GraderDecision))
+                self.groq_generators.append(groq_generator_1)
                 
-                self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]}).with_fallbacks([groq_router_structured])
-                self.generation_llm = self.llm.with_fallbacks([groq_generator])
-                print("NexusAI Resilience Layer: Groq fallback models successfully initialized.")
+                # Secondary Groq Fallback (Load Balancing / Rate Limit Protection)
+                if groq_api_key2:
+                    groq_router_2 = ChatGroq(model="llama-3.1-8b-instant", temperature=0, groq_api_key=groq_api_key2, max_retries=0)
+                    groq_generator_2 = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key2, max_retries=0)
+                    fallbacks_router.append(groq_router_2.with_structured_output(RouterDecision))
+                    fallbacks_guardrail.append(groq_router_2.with_structured_output(GuardrailDecision))
+                    fallbacks_grader.append(groq_router_2.with_structured_output(GraderDecision))
+                    self.groq_generators.append(groq_generator_2)
+                
+                self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]}).with_fallbacks(fallbacks_router)
+                self.guardrail_llm = self.llm.with_structured_output(GuardrailDecision).with_config({"tags": ["guardrail"]}).with_fallbacks(fallbacks_guardrail)
+                self.grader_llm = self.llm.with_structured_output(GraderDecision).with_config({"tags": ["grader"]}).with_fallbacks(fallbacks_grader)
+                
+                self.generation_llm = self.llm
+                print(f"NexusAI Resilience Layer: Groq fallback models ({len(self.groq_generators)}) successfully initialized.")
             except Exception as e:
                 print(f"NexusAI Resilience Layer Warning: Failed to initialize Groq fallback models ({e}). Defaulting to Gemini alone.")
                 self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]})
+                self.guardrail_llm = self.llm.with_structured_output(GuardrailDecision).with_config({"tags": ["guardrail"]})
+                self.grader_llm = self.llm.with_structured_output(GraderDecision).with_config({"tags": ["grader"]})
                 self.generation_llm = self.llm
         else:
             print("NexusAI Resilience Layer Warning: GROQ_API_KEY is not defined in the environment. Defaulting to Gemini alone.")
             self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]})
+            self.guardrail_llm = self.llm.with_structured_output(GuardrailDecision).with_config({"tags": ["guardrail"]})
+            self.grader_llm = self.llm.with_structured_output(GraderDecision).with_config({"tags": ["grader"]})
             self.generation_llm = self.llm
 
-        
         # Build the graph workflow
         workflow = StateGraph(AgentState)
         
         # Define nodes
         workflow.add_node("rewrite_query", self.rewrite_query)
+        workflow.add_node("input_guardrail", self.input_guardrail)
+        workflow.add_node("execute_guardrail_block", self.execute_guardrail_block)
         workflow.add_node("route_intent", self.route_intent)
+        workflow.add_node("retrieve_documents", self.retrieve_documents)
+        workflow.add_node("document_grader", self.document_grader)
         workflow.add_node("execute_simple_rag", self.execute_simple_rag)
         workflow.add_node("execute_compare_rag", self.execute_compare_rag)
         
         # Define edges
         workflow.add_edge(START, "rewrite_query")
-        workflow.add_edge("rewrite_query", "route_intent")
+        workflow.add_edge("rewrite_query", "input_guardrail")
         
-        # Conditional path selection
+        # Conditional path selection for Guardrail
         workflow.add_conditional_edges(
-            "route_intent",
-            self.decide_route,
+            "input_guardrail",
+            self.decide_guardrail,
             {
-                "simple_rag": "execute_simple_rag",
-                "compare_rag": "execute_compare_rag"
+                "valid": "route_intent",
+                "invalid": "execute_guardrail_block"
+            }
+        )
+        
+        workflow.add_edge("execute_guardrail_block", END)
+        workflow.add_edge("route_intent", "retrieve_documents")
+        workflow.add_edge("retrieve_documents", "document_grader")
+        
+        # Conditional path selection for Grader Self-Correction
+        workflow.add_conditional_edges(
+            "document_grader",
+            self.decide_grader,
+            {
+                "relevant_simple": "execute_simple_rag",
+                "relevant_compare": "execute_compare_rag",
+                "retry": "rewrite_query"
             }
         )
         
@@ -87,7 +143,7 @@ class AgentOrchestrator:
         Rewrites the query based on chat history to inject missing context (coreference resolution).
         """
         history = state.get("chat_history", "")
-        original_query = state["query"]
+        original_query = state.get("query", "")
         
         if not history.strip():
             return {"query": original_query, "original_query": original_query}
@@ -108,19 +164,55 @@ class AgentOrchestrator:
             "Standalone Query:"
         )
         try:
-            # We use generation_llm (fallback supported) for rewriting as it's better at reasoning
             response = await self.generation_llm.ainvoke(prompt)
             rewritten = response.content.strip()
             print(f"NexusAI Rewriter: '{original_query}' -> '{rewritten}'")
             return {"query": rewritten, "original_query": original_query}
         except Exception as e:
-            print(f"Query rewriting failed: {e}")
+            print(f"NexusAI Rewriter: Gemini failed ({e}). Attempting fallbacks...")
+            if hasattr(self, "groq_generators") and self.groq_generators:
+                for idx, fallback_llm in enumerate(self.groq_generators):
+                    try:
+                        response = await fallback_llm.ainvoke(prompt)
+                        rewritten = response.content.strip()
+                        print(f"NexusAI Rewriter (Fallback {idx+1}): '{original_query}' -> '{rewritten}'")
+                        return {"query": rewritten, "original_query": original_query}
+                    except Exception as fallback_e:
+                        print(f"NexusAI Rewriter: Fallback {idx+1} failed ({fallback_e}).")
+            
+            print("NexusAI Rewriter: All models failed. Falling back to original query.")
             return {"query": original_query, "original_query": original_query}
+
+    def input_guardrail(self, state: AgentState) -> Dict:
+        """
+        Scope Guardrail: Prevents general knowledge questions and forces RAG scope.
+        """
+        prompt = (
+            "You are a strict security guard for a document AI platform. "
+            "Your job is to determine if the user query is asking a general knowledge question OR if it is asking about uploaded documents/interview prep. "
+            "Return True if it is related to documents/interview prep. Return False if it is general knowledge (e.g., 'What is the capital of France?').\n\n"
+            f"Query: {state['query']}"
+        )
+        try:
+            decision = self.guardrail_llm.invoke(prompt)
+            if not decision.is_valid:
+                return {"route": "guardrail_block"}
+        except Exception as e:
+            print(f"Guardrail failed: {e}")
+        return {}
+        
+    def decide_guardrail(self, state: AgentState) -> str:
+        """ Evaluates if query is valid or blocked by guardrail. """
+        if state.get("route") == "guardrail_block":
+            return "invalid"
+        return "valid"
+        
+    async def execute_guardrail_block(self, state: AgentState) -> Dict:
+        """ Gracefully denies general knowledge questions. """
+        return {"answer": "I can only answer questions related to our uploaded documents.", "sources": []}
             
     def route_intent(self, state: AgentState) -> Dict:
-        """
-        Analyzes query intent and decides which RAG path to execute.
-        """
+        """ Analyzes query intent and decides which RAG path to execute. """
         prompt = (
             f"You are a professional routing classifier for an AI research platform.\n"
             f"Given the user query below, determine if it is a single-document query (fact extraction, simple search) "
@@ -136,17 +228,53 @@ class AgentOrchestrator:
             
         return {"route": route}
         
-    def decide_route(self, state: AgentState) -> str:
-        """
-        Helper method to evaluate conditional path edge.
-        """
-        return state["route"]
+    def retrieve_documents(self, state: AgentState) -> Dict:
+        """ Retrieves documents based on route. """
+        route = state.get("route", "simple_rag")
+        k = 10 if route == "compare_rag" else 5
+        docs = self.query_processor.retrieve_documents(state["query"], k=k)
+        return {"documents": docs}
+        
+    def document_grader(self, state: AgentState) -> Dict:
+        """ Evaluates retrieved chunks for relevance to trigger self-correction. """
+        docs = state.get("documents", [])
+        retries = state.get("retries", 0)
+        
+        if not docs:
+            return {"grader_retry": False}
+            
+        context_text = self.query_processor.format_context(docs)
+        prompt = (
+            "You are a strict document grader. Determine if the provided context contains any information relevant to the user query.\n\n"
+            f"Query: {state['query']}\n\nContext:\n{context_text}"
+        )
+        
+        try:
+            decision = self.grader_llm.invoke(prompt)
+            if not decision.is_relevant:
+                if retries < 2:
+                    print(f"NexusAI Self-Correction: Documents irrelevant. Retrying... ({retries+1}/2)")
+                    return {"grader_retry": True, "retries": retries + 1}
+                else:
+                    print(f"NexusAI Self-Correction: Max retries reached. Proceeding.")
+                    return {"grader_retry": False}
+            return {"grader_retry": False}
+        except Exception as e:
+            print(f"Grader failed: {e}")
+            return {"grader_retry": False}
+            
+    def decide_grader(self, state: AgentState) -> str:
+        """ Evaluates conditional path edge after grading. """
+        if state.get("grader_retry", False):
+            return "retry"
+        
+        if state.get("route") == "compare_rag":
+            return "relevant_compare"
+        return "relevant_simple"
         
     async def execute_simple_rag(self, state: AgentState) -> Dict:
-        """
-        Standard RAG route. Optimized for single-file, quick factual query.
-        """
-        docs = self.query_processor.retrieve_documents(state["query"], k=5)
+        """ Standard RAG generation. """
+        docs = state.get("documents", [])
         if not docs:
             return {"answer": "I couldn't find any relevant information in the uploaded documents.", "sources": []}
             
@@ -154,28 +282,38 @@ class AgentOrchestrator:
         chain = self.query_processor.prompt_template | self.generation_llm.with_config({"tags": ["generator"]})
         
         full_content = ""
-        # Stream chunks internally to trigger on_chat_model_stream events
-        async for chunk in chain.astream({"context": context_text, "question": state["query"]}):
-            full_content += chunk.content
+        try:
+            async for chunk in chain.astream({"context": context_text, "question": state["query"]}):
+                full_content += chunk.content
+        except Exception as e:
+            print(f"NexusAI Resilience: Generation failed ({e}). Attempting fallbacks...")
+            fallback_success = False
+            if hasattr(self, "groq_generators") and self.groq_generators:
+                for idx, fallback_llm in enumerate(self.groq_generators):
+                    try:
+                        full_content = ""
+                        fallback_chain = self.query_processor.prompt_template | fallback_llm.with_config({"tags": ["generator"]})
+                        async for chunk in fallback_chain.astream({"context": context_text, "question": state["query"]}):
+                            full_content += chunk.content
+                        fallback_success = True
+                        print(f"NexusAI Resilience: Fallback {idx+1} succeeded.")
+                        break
+                    except Exception as fallback_e:
+                        print(f"NexusAI Resilience: Fallback {idx+1} failed ({fallback_e}).")
             
-        sources = [
-            {"content": doc.page_content, "metadata": doc.metadata}
-            for doc in docs
-        ]
+            if not fallback_success:
+                raise Exception("All generation models failed.")
+            
+        sources = [{"content": doc.page_content, "metadata": doc.metadata} for doc in docs]
         return {"answer": full_content, "sources": sources}
         
     async def execute_compare_rag(self, state: AgentState) -> Dict:
-        """
-        Comparison RAG route. Optimized for cross-document comparison and structural formats (tables).
-        """
-        # Retrieve more context chunks for comparison (k=10)
-        docs = self.query_processor.retrieve_documents(state["query"], k=10)
+        """ Comparison RAG generation. """
+        docs = state.get("documents", [])
         if not docs:
             return {"answer": "I couldn't find any relevant documents to run a comparison.", "sources": []}
             
         context_text = self.query_processor.format_context(docs)
-        
-        # Prompts Gemini specifically to format a comparison layout (Markdown table/matrix)
         comparison_prompt = ChatPromptTemplate.from_messages([
             ("system", (
                 "You are an expert research comparison agent for the NexusAI platform.\n"
@@ -191,12 +329,27 @@ class AgentOrchestrator:
         chain = comparison_prompt | self.generation_llm.with_config({"tags": ["generator"]})
         
         full_content = ""
-        # Stream chunks internally to trigger on_chat_model_stream events
-        async for chunk in chain.astream({"context": context_text, "question": state["query"]}):
-            full_content += chunk.content
+        try:
+            async for chunk in chain.astream({"context": context_text, "question": state["query"]}):
+                full_content += chunk.content
+        except Exception as e:
+            print(f"NexusAI Resilience: Generation failed ({e}). Attempting fallbacks...")
+            fallback_success = False
+            if hasattr(self, "groq_generators") and self.groq_generators:
+                for idx, fallback_llm in enumerate(self.groq_generators):
+                    try:
+                        full_content = ""
+                        fallback_chain = comparison_prompt | fallback_llm.with_config({"tags": ["generator"]})
+                        async for chunk in fallback_chain.astream({"context": context_text, "question": state["query"]}):
+                            full_content += chunk.content
+                        fallback_success = True
+                        print(f"NexusAI Resilience: Fallback {idx+1} succeeded.")
+                        break
+                    except Exception as fallback_e:
+                        print(f"NexusAI Resilience: Fallback {idx+1} failed ({fallback_e}).")
             
-        sources = [
-            {"content": doc.page_content, "metadata": doc.metadata}
-            for doc in docs
-        ]
+            if not fallback_success:
+                raise Exception("All generation models failed.")
+            
+        sources = [{"content": doc.page_content, "metadata": doc.metadata} for doc in docs]
         return {"answer": full_content, "sources": sources}

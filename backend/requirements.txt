@@ -18,3 +18,4 @@ langgraph
 langchain-groq
 pyjwt
 bcrypt
+slowapi

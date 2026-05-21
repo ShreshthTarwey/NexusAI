@@ -54,11 +54,20 @@
 - Wrapped all API calls in an authenticated helper `apiFetch` that handles header token injection and automatic 401 redirect behavior.
 - Added user profile info status footer and a secure Logout button in the sidebar.
 - Created and executed a backend integration test `test_auth.py` validating registration, duplicate checks, login failures, credential validation, session retrieval, and automated database cleanup.
+- **Phase 7 (Completed):** Integrated Reliability & Control Layer.
+- Engineered a self-correcting RAG loop using LangGraph, incorporating a `document_grader` node that autonomously evaluates context relevance and forces query rewrites and re-retrieval (up to 2 retries) if hallucination risks are detected.
+- Added strict Scope Guardrails via an `input_guardrail` node to classify intents and block general knowledge questions (e.g. "What is the capital of France?"), answering gracefully with "I can only answer questions related to our uploaded documents."
+- Implemented API Rate Limiting using `slowapi` on `/api/auth`, `/api/upload`, and `/api/query` endpoints to prevent abuse and brute-force attacks.
+- Enhanced all evaluation LLM calls (Guardrail, Router, Grader) with `with_structured_output` for rigorous Pydantic schema enforcement.
+- Engineered a robust Multi-Tier Fallback Loop for all components (Rewriter, Graders, RAG Generators). If Gemini hits a Rate Limit (429), it instantly degrades to Groq `llama-3.1-8b` / `llama-3.3-70b` models.
+- Integrated a secondary API key, `GROQ_API_KEY2`, acting as a final load balancer. If the primary Groq fallback fails due to limits, the system dynamically reroutes traffic to the secondary fallback without dropping the user's request.
+- Removed LangChain's internal default exponential backoff retries (`max_retries=0`) across all LLMs to guarantee immediate, zero-delay failovers during outages.
+- Implemented intelligent Context Truncation in backend chat history aggregation, safeguarding fallback LLMs against maximum context length crashes (Error 400).
 
 ## Pending Tasks
 - [x] Transition to Phase 6 (Conversational Memory & Session Management).
-- [ ] Transition to Phase 7 (Reliability & Control Layer).
-- [ ] Implement system safety guardrails, rate-limiting, or LLM output validation logic.
+- [x] Transition to Phase 7 (Reliability & Control Layer).
+- [ ] Final Testing and Project Wrap-up.
 
 ## Current Limitations
 - Phase 6 is complete, but session directories on disk currently persist indefinitely; a garbage collection or expiry date logic needs to be implemented later.

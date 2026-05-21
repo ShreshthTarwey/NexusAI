@@ -1,10 +1,14 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Form, Depends, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Form, Depends, HTTPException, status, Request
 from fastapi.responses import StreamingResponse
 import uuid
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 import os
 import shutil
 import tempfile
@@ -47,12 +51,16 @@ async def lifespan(app: FastAPI):
     if db_client is not None:
         db_client.close()
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="NexusAI API",
     description="Backend API for NexusAI Self-Correcting Multi-Agent Research Intelligence Platform",
     version="0.2.5",
     lifespan=lifespan
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 app.state.db = db
 
 # Enable CORS strictly for the React frontend
@@ -77,7 +85,8 @@ class UserAuth(BaseModel):
     password: str
 
 @app.post("/api/auth/register")
-async def register(auth_data: UserAuth):
+@limiter.limit("10/minute")
+async def register(request: Request, auth_data: UserAuth):
     if db is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -100,7 +109,8 @@ async def register(auth_data: UserAuth):
     return {"message": "User registered successfully"}
 
 @app.post("/api/auth/login")
-async def login(auth_data: UserAuth):
+@limiter.limit("10/minute")
+async def login(request: Request, auth_data: UserAuth):
     if db is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -215,7 +225,9 @@ def process_upload_task(job_id: str, file_paths_and_names: list, session_id: str
         }
 
 @app.post("/api/upload")
+@limiter.limit("30/minute")
 async def upload_document(
+    request: Request,
     background_tasks: BackgroundTasks, 
     files: List[UploadFile] = File(...),
     session_id: str = Form("default"),
@@ -274,10 +286,11 @@ class QueryRequest(BaseModel):
     session_id: str = "default"
 
 @app.post("/api/query")
-async def query_document(request: QueryRequest, current_user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def query_document(request: Request, query_request: QueryRequest, current_user: dict = Depends(get_current_user)):
     if db is not None:
         # Verify session ownership
-        session = await db.sessions.find_one({"session_id": request.session_id, "username": current_user["username"]})
+        session = await db.sessions.find_one({"session_id": query_request.session_id, "username": current_user["username"]})
         if not session:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or unauthorized")
 
@@ -285,14 +298,14 @@ async def query_document(request: QueryRequest, current_user: dict = Depends(get
         # Fetch last 5 message pairs (10 messages) + 1st message pair
         chat_history_str = ""
         if db is not None:
-            cursor = db.chat_history.find({"session_id": request.session_id}).sort("timestamp", 1)
+            cursor = db.chat_history.find({"session_id": query_request.session_id}).sort("timestamp", 1)
             all_msgs = await cursor.to_list(length=1000)
             
             # If it's the very first query of a new session, rename the session title to the user's query
             if len(all_msgs) == 0:
-                short_title = request.query[:30] + "..." if len(request.query) > 30 else request.query
+                short_title = query_request.query[:30] + "..." if len(query_request.query) > 30 else query_request.query
                 await db.sessions.update_one(
-                    {"session_id": request.session_id},
+                    {"session_id": query_request.session_id},
                     {"$set": {"title": short_title}}
                 )
             
@@ -305,16 +318,19 @@ async def query_document(request: QueryRequest, current_user: dict = Depends(get
                 context_msgs = first_pair + last_msgs
                 
                 for m in context_msgs:
-                    chat_history_str += f"{m['role'].upper()}: {m['content']}\n\n"
+                    content = m['content']
+                    if m['role'] == 'assistant' and len(content) > 500:
+                        content = content[:500] + "... [truncated]"
+                    chat_history_str += f"{m['role'].upper()}: {content}\n\n"
 
-        orchestrator = AgentOrchestrator(session_id=request.session_id)
+        orchestrator = AgentOrchestrator(session_id=query_request.session_id)
         
         # Save user message immediately
         if db is not None:
             await db.chat_history.insert_one({
-                "session_id": request.session_id,
+                "session_id": query_request.session_id,
                 "role": "user",
-                "content": request.query,
+                "content": query_request.query,
                 "timestamp": datetime.utcnow()
             })
 
@@ -325,7 +341,7 @@ async def query_document(request: QueryRequest, current_user: dict = Depends(get
                 final_sources = []
                 
                 # Consume node and runnable execution events in real-time
-                async for event in orchestrator.graph.astream_events({"query": request.query, "chat_history": chat_history_str}, version="v2"):
+                async for event in orchestrator.graph.astream_events({"query": query_request.query, "chat_history": chat_history_str}, version="v2"):
                     kind = event["event"]
                     if kind == "on_chat_model_stream":
                         if "generator" in event.get("tags", []):
@@ -335,7 +351,7 @@ async def query_document(request: QueryRequest, current_user: dict = Depends(get
                                 full_assistant_response += token
                                 yield f"data: {json.dumps({'text': token})}\n\n"
                                 
-                    elif kind == "on_chain_end" and event["name"] in ["execute_simple_rag", "execute_compare_rag"]:
+                    elif kind == "on_chain_end" and event["name"] in ["execute_simple_rag", "execute_compare_rag", "execute_guardrail_block"]:
                         output = event["data"]["output"]
                         if isinstance(output, dict):
                             if not streamed_any and "answer" in output:
@@ -348,7 +364,7 @@ async def query_document(request: QueryRequest, current_user: dict = Depends(get
                 # Save assistant response after stream is complete
                 if db is not None:
                     await db.chat_history.insert_one({
-                        "session_id": request.session_id,
+                        "session_id": query_request.session_id,
                         "role": "assistant",
                         "content": full_assistant_response,
                         "sources": final_sources,

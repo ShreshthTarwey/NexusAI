@@ -111,6 +111,13 @@ const MarkdownRenderer = ({ content }) => {
             </table>
           </div>
         );
+      } else {
+        // Render incomplete table rows as plain text during streaming
+        elements.push(
+          <div key={key} className="markdown-text">
+            {rows.map((r, i) => <div key={i}>{r}</div>)}
+          </div>
+        );
       }
     }
 

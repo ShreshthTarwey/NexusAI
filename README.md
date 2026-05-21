@@ -323,6 +323,61 @@ const apiFetch = async (path, options = {}) => {
 
 ---
 
+### Phase 7: Reliability & Control Layer (Guardrails, Rate Limiting & Self-Correction)
+
+This phase upgrades NexusAI from a standard RAG system to a resilient, self-correcting, and secure production service.
+
+**1. Self-Correcting RAG Loop (Pillar 1):**
+We restructured the LangGraph state machine into a self-correcting loop. A `document_grader` node evaluates if the retrieved chunks are relevant to the query *before* generating an answer. If irrelevant, it increments a retry counter and routes back to the query rewriter to try a different search phrasing. This loops up to a maximum of 2 retries, significantly reducing hallucinations.
+
+**2. Scope Guardrails (Pillar 2):**
+To prevent the AI from answering general knowledge questions unrelated to the uploaded documents, we introduced an `input_guardrail` node. It classifies the intent and short-circuits execution to a graceful block message ("I can only answer questions related to our uploaded documents.") if the user wanders out of scope.
+
+**3. Rate Limiting (Pillar 3):**
+Integrated `slowapi` to protect backend endpoints from brute-force attacks and abuse. Authentication endpoints are throttled to 10 requests/minute, while querying and uploads are throttled to 30 requests/minute.
+
+**4. Structured Data Validation (Pillar 4):**
+Enhanced all evaluation LLM calls (Guardrail, Router, Grader) by using LangChain's `with_structured_output`, strictly enforcing output conformity to predefined Pydantic schemas.
+
+**5. Multi-Tier API Fallbacks & Load Balancing (Pillar 5):**
+Constructed a highly resilient API layer that cascades through LLMs during outages or rate-limiting (HTTP 429) events. If the primary Gemini model fails (e.g. max tokens per minute exceeded), the system dynamically traps the exception in real-time and reroutes the query and context payload to a fallback Groq instance (`llama-3.1-8b` / `llama-3.3-70b`). To act as a load balancer and guarantee uptime, it supports an additional `GROQ_API_KEY2` as a secondary fallback layer. The system dynamically truncates chat history to prevent Context Window overflow crashes on smaller fallback models.
+
+**Architecture Graph:**
+```mermaid
+graph TD
+    START((START)) --> rewrite_query
+    rewrite_query --> input_guardrail
+    
+    input_guardrail -- valid --> route_intent
+    input_guardrail -- invalid --> execute_guardrail_block
+    
+    execute_guardrail_block --> END((END))
+    route_intent --> retrieve_documents
+    retrieve_documents --> document_grader
+    
+    document_grader -- relevant_simple --> execute_simple_rag
+    document_grader -- relevant_compare --> execute_compare_rag
+    document_grader -- retry --> rewrite_query
+    
+    execute_simple_rag --> END
+    execute_compare_rag --> END
+```
+
+**Guardrail Node Snippet:**
+```python
+def input_guardrail(self, state: AgentState) -> Dict:
+    prompt = (
+        "You are a strict security guard... Return True if it is related to documents... False if general knowledge..."
+        f"Query: {state['query']}"
+    )
+    decision = self.guardrail_llm.invoke(prompt)
+    if not decision.is_valid:
+        return {"route": "guardrail_block"}
+    return {}
+```
+
+---
+
 ## Folder Structure
 ```
 NexusAI/
@@ -340,7 +395,7 @@ NexusAI/
 - Phase 5: Agentic Routing via LangGraph (Completed)
 - Phase 6: Conversational Memory & Session Management (Completed) *(Note: Session folder expiry date logic to be implemented later)*
 - Phase 6.5: User Authentication & Security Isolation (Completed)
-- Phase 7: Reliability & Control Layer (Current)
+- Phase 7: Reliability & Control Layer (Completed)
 - Phase 8: Tool Calling Layer
 - Phase 9: Evaluation Layer
 - Phase 10: Production Engineering
