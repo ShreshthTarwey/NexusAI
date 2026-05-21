@@ -396,7 +396,7 @@ NexusAI/
 - Phase 6: Conversational Memory & Session Management (Completed) *(Note: Session folder expiry date logic to be implemented later)*
 - Phase 6.5: User Authentication & Security Isolation (Completed)
 - Phase 7: Reliability & Control Layer (Completed)
-- Phase 8: Tool Calling Layer
+- Phase 8: Tool Calling Layer(Current)
 - Phase 9: Evaluation Layer
 - Phase 10: Production Engineering
 
