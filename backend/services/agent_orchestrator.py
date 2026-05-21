@@ -39,7 +39,7 @@ class AgentOrchestrator:
     """
     def __init__(self, session_id: str = "default"):
         self.session_id = session_id
-        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, max_retries=0)
+        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, max_retries=1)
         self.query_processor = QueryProcessor(session_id=session_id)
         
         # Check for Groq API Keys and activate resilience layer
@@ -55,8 +55,8 @@ class AgentOrchestrator:
                 self.groq_generators = []
                 
                 # Primary Groq Fallback
-                groq_router_1 = ChatGroq(model="llama-3.1-8b-instant", temperature=0, groq_api_key=groq_api_key, max_retries=0)
-                groq_generator_1 = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key, max_retries=0)
+                groq_router_1 = ChatGroq(model="llama-3.1-8b-instant", temperature=0, groq_api_key=groq_api_key, max_retries=1)
+                groq_generator_1 = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key, max_retries=1)
                 fallbacks_router.append(groq_router_1.with_structured_output(RouterDecision))
                 fallbacks_guardrail.append(groq_router_1.with_structured_output(GuardrailDecision))
                 fallbacks_grader.append(groq_router_1.with_structured_output(GraderDecision))
@@ -64,8 +64,8 @@ class AgentOrchestrator:
                 
                 # Secondary Groq Fallback (Load Balancing / Rate Limit Protection)
                 if groq_api_key2:
-                    groq_router_2 = ChatGroq(model="llama-3.1-8b-instant", temperature=0, groq_api_key=groq_api_key2, max_retries=0)
-                    groq_generator_2 = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key2, max_retries=0)
+                    groq_router_2 = ChatGroq(model="llama-3.1-8b-instant", temperature=0, groq_api_key=groq_api_key2, max_retries=1)
+                    groq_generator_2 = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, groq_api_key=groq_api_key2, max_retries=1)
                     fallbacks_router.append(groq_router_2.with_structured_output(RouterDecision))
                     fallbacks_guardrail.append(groq_router_2.with_structured_output(GuardrailDecision))
                     fallbacks_grader.append(groq_router_2.with_structured_output(GraderDecision))
