@@ -40,12 +40,20 @@
   - Upgraded `index.css` with premium CSS styles for headers, lists, code panels, and comparison tables using modern typography, glassmorphism, responsive alignment, and sleek neon accents.
   - Fixed the metadata display inconsistency where non-PDF documents (Markdown and Text files) showed broken `(Page ?)` markers by implementing a robust numeric page validation check in `App.jsx` that hides the page count completely when it is missing or invalid.
   - Reinforced routing token containment within `backend/main.py` by filtering the LangGraph stream strictly on the `"generator"` event tag to drop router classification chunks (such as `{"route": "compare_rag"}`) in real time, preventing them from leaking into the user's UI.
-- **Phase 6 (Completed):** Integrated Conversational Memory & Session Management.
+- **Phase 6 (Completed):** Integrated Conversational Memory & Session Management. (Later the session folder expiry date to be set)
 - Integrated MongoDB using `motor` to persistently store chat history and session metadata.
 - Implemented multi-tenant session isolation, dynamically routing FAISS vector DBs and BM25 `.pkl` files to `storage/sessions/<session_id>/` to prevent cross-contamination between different chat threads.
 - Built a query condensation/rewriter node into the LangGraph state machine. It retrieves the master prompt and the last 5 turns of conversation to rewrite follow-up queries, preserving context while avoiding forced comparisons during entity shifts (e.g. asking "Google?").
 - Refactored the React frontend to feature a premium two-column layout with a dynamic sidebar for switching, creating, and deleting persistent chat sessions.
 - Suppressed benign Python 3.13 aiohttp RuntimeWarnings (`ClientResponse.json was never awaited`) to keep terminal logs clean.
+- **Phase 6.5 (Completed):** User Authentication (Login / Logout).
+- Implemented custom JWT-based authentication in FastAPI utilizing the existing MongoDB Atlas setup for credential storage.
+- Created `backend/services/auth.py` with password hashing (bcrypt), JWT creation/validation, and FastAPI dependencies.
+- Secured backend routes (`/api/sessions`, `/api/upload`, `/api/query`, `/api/clear`) with user ownership checks, mapping queries, files, and indices strictly to the authenticated `username`.
+- Designed a premium glassmorphic React Login/Signup UI gate in `App.jsx` using vanilla CSS, utilizing `localStorage` to persist access tokens.
+- Wrapped all API calls in an authenticated helper `apiFetch` that handles header token injection and automatic 401 redirect behavior.
+- Added user profile info status footer and a secure Logout button in the sidebar.
+- Created and executed a backend integration test `test_auth.py` validating registration, duplicate checks, login failures, credential validation, session retrieval, and automated database cleanup.
 
 ## Pending Tasks
 - [x] Transition to Phase 6 (Conversational Memory & Session Management).
@@ -68,6 +76,7 @@
 - `backend/services/__init__.py`
 - `backend/services/document_processor.py`
 - `backend/services/query_processor.py`
+- `backend/services/auth.py`
 - `frontend/src/index.css`
 - `frontend/src/App.jsx`
 

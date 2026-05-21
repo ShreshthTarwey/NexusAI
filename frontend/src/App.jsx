@@ -250,6 +250,18 @@ const parseInlineMarkdown = (text) => {
 };
 
 function App() {
+  const [token, setToken] = useState(localStorage.getItem('nexusai_token') || null);
+  const [currentUser, setCurrentUser] = useState(localStorage.getItem('nexusai_username') || null);
+  
+  // Auth Form State
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+
   const [sessions, setSessions] = useState([]);
   const [currentSession, setCurrentSession] = useState('default');
   const [files, setFiles] = useState([]);
@@ -262,10 +274,49 @@ function App() {
   const [isQuerying, setIsQuerying] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // Fetch all sessions on load
+  // Authenticated custom fetch wrapper
+  const apiFetch = async (path, options = {}) => {
+    const url = `http://localhost:8000${path}`;
+    const headers = options.headers || {};
+    const storedToken = localStorage.getItem('nexusai_token');
+    
+    if (storedToken) {
+      headers['Authorization'] = `Bearer ${storedToken}`;
+    }
+    
+    const newOptions = {
+      ...options,
+      headers
+    };
+    
+    try {
+      const res = await fetch(url, newOptions);
+      if (res.status === 401) {
+        localStorage.removeItem('nexusai_token');
+        localStorage.removeItem('nexusai_username');
+        setToken(null);
+        setCurrentUser(null);
+        setSessions([]);
+        setCurrentSession('default');
+        setMessages([]);
+        setFiles([]);
+        setStatus('idle');
+        setResponse(null);
+        throw new Error("Session expired. Please log in again.");
+      }
+      return res;
+    } catch (err) {
+      console.error(`API Fetch Error on ${path}:`, err);
+      throw err;
+    }
+  };
+
+  // Fetch all sessions on load / login change
   useEffect(() => {
-    fetchSessions();
-  }, []);
+    if (token) {
+      fetchSessions();
+    }
+  }, [token]);
 
   // When session changes, fetch its messages
   useEffect(() => {
@@ -275,6 +326,7 @@ function App() {
       setMessages([]);
       setFiles([]);
       setStatus('idle');
+      setResponse(null);
     }
   }, [currentSession]);
 
@@ -284,7 +336,7 @@ function App() {
 
   const fetchSessions = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/sessions');
+      const res = await apiFetch('/api/sessions');
       const data = await res.json();
       setSessions(data.sessions || []);
     } catch (e) {
@@ -294,7 +346,8 @@ function App() {
 
   const fetchSessionMessages = async (sessionId) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/sessions/${sessionId}/messages`);
+      const res = await apiFetch(`/api/sessions/${sessionId}/messages`);
+      if (!res.ok) return;
       const data = await res.json();
       if (data.messages && data.messages.length > 0) {
         setMessages(data.messages);
@@ -310,7 +363,7 @@ function App() {
 
   const handleNewChat = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/sessions', { method: 'POST' });
+      const res = await apiFetch('/api/sessions', { method: 'POST' });
       const data = await res.json();
       setCurrentSession(data.session_id);
       fetchSessions();
@@ -323,7 +376,7 @@ function App() {
     e.stopPropagation();
     if (!window.confirm("Delete this chat?")) return;
     try {
-      await fetch(`http://localhost:8000/api/sessions/${sessionId}`, { method: 'DELETE' });
+      await apiFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
       if (currentSession === sessionId) {
         setCurrentSession('default');
       }
@@ -357,7 +410,7 @@ function App() {
   const handleClearDatabase = async () => {
     if (!window.confirm("Are you sure you want to wipe the knowledge base? This will delete all uploaded documents.")) return;
     try {
-      await fetch(`http://localhost:8000/api/clear?session_id=${currentSession}`, { method: 'DELETE' });
+      await apiFetch(`/api/clear?session_id=${currentSession}`, { method: 'DELETE' });
       setFiles([]);
       setMessages([]);
       setStatus('idle');
@@ -377,7 +430,7 @@ function App() {
     formData.append('session_id', currentSession);
 
     try {
-      const res = await fetch('http://localhost:8000/api/upload', {
+      const res = await apiFetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
@@ -395,7 +448,7 @@ function App() {
   const pollUploadStatus = (jobId) => {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/upload/status/${jobId}`);
+        const res = await apiFetch(`/api/upload/status/${jobId}`);
         const data = await res.json();
         if (data.status === 'success') {
           clearInterval(interval);
@@ -432,7 +485,7 @@ function App() {
     setIsQuerying(true);
 
     try {
-      const res = await fetch('http://localhost:8000/api/query', {
+      const res = await apiFetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: userMessage.content, session_id: currentSession }),
@@ -504,6 +557,172 @@ function App() {
     }
   };
 
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    
+    const username = authUsername.trim();
+    const password = authPassword;
+    
+    if (!username || !password) {
+      setAuthError('Please fill in all fields.');
+      return;
+    }
+    
+    if (authMode === 'signup' && password !== authConfirmPassword) {
+      setAuthError('Passwords do not match.');
+      return;
+    }
+    
+    setAuthLoading(true);
+    
+    try {
+      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+      const res = await fetch(`http://localhost:8000${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.detail || 'Authentication failed');
+      }
+      
+      if (authMode === 'login') {
+        localStorage.setItem('nexusai_token', data.access_token);
+        localStorage.setItem('nexusai_username', data.username);
+        setToken(data.access_token);
+        setCurrentUser(data.username);
+        setAuthUsername('');
+        setAuthPassword('');
+        setAuthConfirmPassword('');
+      } else {
+        setAuthMode('login');
+        setAuthPassword('');
+        setAuthConfirmPassword('');
+        setAuthError('Successfully registered! Please sign in.');
+      }
+    } catch (err) {
+      setAuthError(err.message || 'An error occurred during authentication.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('nexusai_token');
+    localStorage.removeItem('nexusai_username');
+    setToken(null);
+    setCurrentUser(null);
+    setSessions([]);
+    setCurrentSession('default');
+    setMessages([]);
+    setFiles([]);
+    setStatus('idle');
+    setResponse(null);
+  };
+
+  // Auth UI Gate
+  if (!token) {
+    return (
+      <div className="auth-layout">
+        <div className="auth-card">
+          <div className="auth-header">
+            <h1 className="auth-logo">NexusAI</h1>
+            <p className="auth-subtitle">Self-Correcting Multi-Agent Intelligence</p>
+          </div>
+          
+          <div className="auth-tabs">
+            <button 
+              className={`auth-tab ${authMode === 'login' ? 'active' : ''}`}
+              onClick={() => { setAuthMode('login'); setAuthError(''); }}
+            >
+              Sign In
+            </button>
+            <button 
+              className={`auth-tab ${authMode === 'signup' ? 'active' : ''}`}
+              onClick={() => { setAuthMode('signup'); setAuthError(''); }}
+            >
+              Sign Up
+            </button>
+          </div>
+
+          <form className="auth-form" onSubmit={handleAuthSubmit}>
+            {authError && (
+              <div className={`auth-message ${authError.includes('Successfully') ? 'success' : 'error'}`}>
+                {authError}
+              </div>
+            )}
+            
+            <div className="form-group">
+              <label htmlFor="username">Username</label>
+              <input
+                type="text"
+                id="username"
+                className="auth-input"
+                placeholder="Enter username"
+                value={authUsername}
+                onChange={(e) => setAuthUsername(e.target.value)}
+                required
+              />
+            </div>
+            
+            <div className="form-group">
+              <label htmlFor="password">Password</label>
+              <div className="password-input-wrapper">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  id="password"
+                  className="auth-input"
+                  placeholder="Enter password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  className="password-toggle"
+                  onClick={() => setShowPassword(!showPassword)}
+                >
+                  {showPassword ? "👁" : "👁‍🗨"}
+                </button>
+              </div>
+            </div>
+            
+            {authMode === 'signup' && (
+              <div className="form-group">
+                <label htmlFor="confirmPassword">Confirm Password</label>
+                <input
+                  type={showPassword ? "text" : "password"}
+                  id="confirmPassword"
+                  className="auth-input"
+                  placeholder="Confirm password"
+                  value={authConfirmPassword}
+                  onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                  required
+                />
+              </div>
+            )}
+            
+            <button type="submit" className="auth-submit-btn" disabled={authLoading}>
+              {authLoading ? (
+                <div className="loading-spinner" style={{ width: '1.2rem', height: '1.2rem', margin: '0 auto' }}></div>
+              ) : (
+                authMode === 'login' ? 'Sign In' : 'Create Account'
+              )}
+            </button>
+          </form>
+          
+          <div className="auth-footer">
+            🔒 Secure multi-tenant workspace powered by MongoDB
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-layout">
       {/* Sidebar for Sessions */}
@@ -534,18 +753,36 @@ function App() {
             </div>
           ))}
         </div>
+        
+        {/* Profile Card inside Sidebar */}
+        <div className="sidebar-profile">
+          <div className="profile-info">
+            <span className="profile-avatar">👤</span>
+            <span className="profile-username" title={currentUser}>{currentUser}</span>
+          </div>
+          <button className="logout-btn" onClick={handleLogout} title="Log Out">
+            Logout
+          </button>
+        </div>
       </aside>
 
       {/* Main Area */}
       <main className="main-content">
         <div className="app-container">
-          <header style={{textAlign: 'left', marginBottom: '2rem'}}>
-            <h1 style={{fontSize: '2rem'}}>
-                {currentSession === 'default' 
-                    ? "Welcome to NexusAI" 
-                    : sessions.find(s => s.session_id === currentSession)?.title || "New Chat"}
-            </h1>
-            <p className="subtitle">Upload documents and ask questions</p>
+          <header style={{textAlign: 'left', marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+            <div>
+              <h1 style={{fontSize: '2rem'}}>
+                  {currentSession === 'default' 
+                      ? "Welcome to NexusAI" 
+                      : sessions.find(s => s.session_id === currentSession)?.title || "New Chat"}
+              </h1>
+              <p className="subtitle">Upload documents and ask questions</p>
+            </div>
+            {currentSession !== 'default' && (
+              <button className="clear-db-btn" onClick={handleClearDatabase} title="Clear Knowledge Base">
+                Wipe index
+              </button>
+            )}
           </header>
 
           <div className="upload-card">

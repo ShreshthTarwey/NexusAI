@@ -189,6 +189,140 @@ The frontend's `handleQuerySubmit` reads this stream via a `TextDecoder`, append
 
 ---
 
+### Phase 6: Conversational Memory & Dynamic Session Isolation (MongoDB Memory & Multi-Tenancy)
+
+**1. Dynamic Workspace Isolation:**
+Instead of storing all vectorized documents in a single global database, NexusAI isolates indices per chat session. When files are uploaded, vectors and pickles are dynamically written to the `backend/storage/sessions/{session_id}/` folder. This ensures absolute separation between different topics/chats.
+
+**2. Conversational Memory:**
+During a conversation, the system retrieves the user's initial master query and the last 10 messages (5 turn pairs) from the `chat_history` collection in MongoDB Atlas for the specific `session_id`, compiling them into a context string.
+
+**3. LangGraph Query Condensation Node:**
+The user's follow-up question is routed through the `rewrite_query` state node. It leverages the generation model to reconstruct a context-aware standalone query.
+
+```python
+# Inside backend/services/agent_orchestrator.py
+async def rewrite_query(self, state: AgentState) -> Dict:
+    history = state.get("chat_history", "")
+    original_query = state["query"]
+    
+    if not history.strip():
+        return {"query": original_query, "original_query": original_query}
+        
+    prompt = (
+        "You are an expert Query Reformulator. Given a conversation history and a follow-up query, "
+        "rewrite the follow-up query to be a standalone search query.\n\n"
+        "Rules:\n"
+        "1. If the follow-up query is short (e.g. 'Google?', 'What about Microsoft?'), "
+        "it is a topic/entity shift. Rewrite it to ask the core question category "
+        "about the new entity (e.g. 'What is the hiring process of Google?'). Do NOT assume a comparison "
+        "between the old and new entities unless the user explicitly uses comparison words "
+        "like 'compare', 'contrast', 'versus', 'differences', or 'similarities'.\n"
+        "2. Keep the rewritten query concise and optimized for semantic and keyword search.\n"
+        "3. Do NOT answer the question. Only output the rewritten standalone query.\n\n"
+        f"History:\n{history}\n\n"
+        f"Latest Question: {original_query}\n\n"
+        "Standalone Query:"
+    )
+    try:
+        response = await self.generation_llm.ainvoke(prompt)
+        rewritten = response.content.strip()
+        print(f"NexusAI Rewriter: '{original_query}' -> '{rewritten}'")
+        return {"query": rewritten, "original_query": original_query}
+    except Exception as e:
+        print(f"Query rewriting failed: {e}")
+        return {"query": original_query, "original_query": original_query}
+```
+
+---
+
+### Phase 6.5: User Authentication & Security Isolation (JWT & Bcrypt)
+
+**1. Hashing & Token Generation:**
+User registrations hash password credentials securely using `bcrypt` (with 12 salt rounds) in the `users` database collection. On validation, the `/api/auth/login` endpoint returns a signed JSON Web Token (JWT) representing the user identity (`sub` claim) signed with a secure secret key, defaulting to 24-hour expiration.
+
+**2. Route Guarding & Verification:**
+FastAPI utilizes Python's dependency injection (`Depends`) to extract the Bearer token from the incoming Request request header and resolve the authenticated user in MongoDB. All sessions, documents, query operations, and indices are partitioned by the authenticated `username`.
+
+```python
+# Inside backend/services/auth.py
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+) -> dict:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except jwt.PyJWTError:
+        raise credentials_exception
+        
+    db = getattr(request.app.state, "db", None)
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection is not available"
+        )
+        
+    user = await db.users.find_one({"username": username})
+    if user is None:
+        raise credentials_exception
+        
+    user["_id"] = str(user["_id"])
+    return user
+```
+
+**3. Frontend Persistence & Interceptor Wrapper:**
+The React frontend caches the active authentication token in `localStorage`. All resource requests utilize an `apiFetch` helper function that automatically injects the token into headers. If an API request returns `401 Unauthorized`, the client session is cleared and the user is redirected to the login UI gate.
+
+```javascript
+// Inside frontend/src/App.jsx
+const apiFetch = async (path, options = {}) => {
+  const url = `http://localhost:8000${path}`;
+  const headers = options.headers || {};
+  const storedToken = localStorage.getItem('nexusai_token');
+  
+  if (storedToken) {
+    headers['Authorization'] = `Bearer ${storedToken}`;
+  }
+  
+  const newOptions = {
+    ...options,
+    headers
+  };
+  
+  try {
+    const res = await fetch(url, newOptions);
+    if (res.status === 401) {
+      localStorage.removeItem('nexusai_token');
+      localStorage.removeItem('nexusai_username');
+      setToken(null);
+      setCurrentUser(null);
+      setSessions([]);
+      setCurrentSession('default');
+      setMessages([]);
+      setFiles([]);
+      setStatus('idle');
+      setResponse(null);
+      throw new Error("Session expired. Please log in again.");
+    }
+    return res;
+  } catch (err) {
+    console.error(`API Fetch Error on ${path}:`, err);
+    throw err;
+  }
+};
+```
+
+---
+
 ## Folder Structure
 ```
 NexusAI/
@@ -205,6 +339,7 @@ NexusAI/
 - Phase 4: Observability & Tracing via LangSmith (Completed)
 - Phase 5: Agentic Routing via LangGraph (Completed)
 - Phase 6: Conversational Memory & Session Management (Completed) *(Note: Session folder expiry date logic to be implemented later)*
+- Phase 6.5: User Authentication & Security Isolation (Completed)
 - Phase 7: Reliability & Control Layer (Current)
 - Phase 8: Tool Calling Layer
 - Phase 9: Evaluation Layer

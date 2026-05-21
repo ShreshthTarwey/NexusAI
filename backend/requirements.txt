@@ -16,4 +16,5 @@ langsmith
 filelock
 langgraph
 langchain-groq
-
+pyjwt
+bcrypt

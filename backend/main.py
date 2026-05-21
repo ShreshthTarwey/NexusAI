@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Form
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Form, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 import uuid
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +15,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from services.document_processor import DocumentProcessor
 from services.query_processor import QueryProcessor
 from services.agent_orchestrator import AgentOrchestrator
+from services.auth import hash_password, verify_password, create_access_token, get_current_user
 
 # Load environment variables
 load_dotenv()
@@ -38,10 +39,10 @@ async def lifespan(app: FastAPI):
             # Ping the server to verify connection
             await db_client.admin.command('ping')
             print("==================================================")
-            print("🚀 NexusAI: Successfully connected to MongoDB Atlas!")
+            print("NexusAI: Successfully connected to MongoDB Atlas!")
             print("==================================================")
         except Exception as e:
-            print(f"❌ NexusAI: Failed to connect to MongoDB: {e}")
+            print(f"NexusAI: Failed to connect to MongoDB: {e}")
     yield
     if db_client is not None:
         db_client.close()
@@ -49,9 +50,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="NexusAI API",
     description="Backend API for NexusAI Self-Correcting Multi-Agent Research Intelligence Platform",
-    version="0.2.0",
+    version="0.2.5",
     lifespan=lifespan
 )
+app.state.db = db
 
 # Enable CORS strictly for the React frontend
 app.add_middleware(
@@ -68,33 +70,90 @@ def read_root():
     return {"message": "Welcome to NexusAI API"}
 
 # ---------------------------------------------------------
+# USER AUTHENTICATION SCHEMAS & ENDPOINTS
+# ---------------------------------------------------------
+class UserAuth(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/auth/register")
+async def register(auth_data: UserAuth):
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection is not available"
+        )
+    username = auth_data.username.strip().lower()
+    if not username or not auth_data.password:
+        raise HTTPException(status_code=400, detail="Username and password are required")
+        
+    existing_user = await db.users.find_one({"username": username})
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already exists")
+        
+    hashed_pwd = hash_password(auth_data.password)
+    await db.users.insert_one({
+        "username": username,
+        "password_hash": hashed_pwd,
+        "created_at": datetime.utcnow()
+    })
+    return {"message": "User registered successfully"}
+
+@app.post("/api/auth/login")
+async def login(auth_data: UserAuth):
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection is not available"
+        )
+    username = auth_data.username.strip().lower()
+    user = await db.users.find_one({"username": username})
+    if not user or not verify_password(auth_data.password, user["password_hash"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+        
+    token = create_access_token({"sub": username})
+    return {"access_token": token, "token_type": "bearer", "username": username}
+
+@app.get("/api/auth/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    return {"username": current_user["username"]}
+
+
+# ---------------------------------------------------------
 # SESSION MANAGEMENT ENDPOINTS
 # ---------------------------------------------------------
 @app.get("/api/sessions")
-async def get_sessions():
+async def get_sessions(current_user: dict = Depends(get_current_user)):
     if db is None:
         return {"sessions": []}
-    cursor = db.sessions.find().sort("created_at", -1)
+    cursor = db.sessions.find({"username": current_user["username"]}).sort("created_at", -1)
     sessions = await cursor.to_list(length=100)
     for s in sessions:
         s["_id"] = str(s["_id"])
     return {"sessions": sessions}
 
 @app.post("/api/sessions")
-async def create_session():
+async def create_session(current_user: dict = Depends(get_current_user)):
     session_id = f"chat_{uuid.uuid4().hex[:8]}"
     if db is not None:
         await db.sessions.insert_one({
             "session_id": session_id,
+            "username": current_user["username"],
             "title": "New Chat",
             "created_at": datetime.utcnow()
         })
     return {"session_id": session_id}
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
+async def get_session_messages(session_id: str, current_user: dict = Depends(get_current_user)):
     if db is None:
         return {"messages": []}
+    
+    # Verify session ownership
+    session = await db.sessions.find_one({"session_id": session_id, "username": current_user["username"]})
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or unauthorized")
+        
     cursor = db.chat_history.find({"session_id": session_id}).sort("timestamp", 1)
     messages = await cursor.to_list(length=1000)
     for m in messages:
@@ -102,8 +161,13 @@ async def get_session_messages(session_id: str):
     return {"messages": messages}
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, current_user: dict = Depends(get_current_user)):
     if db is not None:
+        # Verify session ownership
+        session = await db.sessions.find_one({"session_id": session_id, "username": current_user["username"]})
+        if not session:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or unauthorized")
+            
         await db.sessions.delete_one({"session_id": session_id})
         await db.chat_history.delete_many({"session_id": session_id})
     
@@ -154,8 +218,15 @@ def process_upload_task(job_id: str, file_paths_and_names: list, session_id: str
 async def upload_document(
     background_tasks: BackgroundTasks, 
     files: List[UploadFile] = File(...),
-    session_id: str = Form("default")
+    session_id: str = Form("default"),
+    current_user: dict = Depends(get_current_user)
 ):
+    # Verify session ownership
+    if db is not None:
+        session = await db.sessions.find_one({"session_id": session_id, "username": current_user["username"]})
+        if not session:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or unauthorized")
+
     job_id = str(uuid.uuid4())
     upload_jobs[job_id] = {"status": "pending"}
     
@@ -175,13 +246,18 @@ async def upload_document(
         return {"error": str(e)}
 
 @app.get("/api/upload/status/{job_id}")
-def get_upload_status(job_id: str):
+def get_upload_status(job_id: str, current_user: dict = Depends(get_current_user)):
     if job_id not in upload_jobs:
         return {"status": "error", "error": "Job ID not found"}
     return upload_jobs[job_id]
 
 @app.delete("/api/clear")
-def clear_knowledge_base(session_id: str = "default"):
+async def clear_knowledge_base(session_id: str = "default", current_user: dict = Depends(get_current_user)):
+    if db is not None:
+        session = await db.sessions.find_one({"session_id": session_id, "username": current_user["username"]})
+        if not session:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or unauthorized")
+
     try:
         processor = DocumentProcessor(session_id=session_id)
         processor.clear_database()
@@ -198,7 +274,13 @@ class QueryRequest(BaseModel):
     session_id: str = "default"
 
 @app.post("/api/query")
-async def query_document(request: QueryRequest):
+async def query_document(request: QueryRequest, current_user: dict = Depends(get_current_user)):
+    if db is not None:
+        # Verify session ownership
+        session = await db.sessions.find_one({"session_id": request.session_id, "username": current_user["username"]})
+        if not session:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or unauthorized")
+
     try:
         # Fetch last 5 message pairs (10 messages) + 1st message pair
         chat_history_str = ""
