@@ -1,13 +1,12 @@
 # Engineering Log & Progress Tracker
 
 ## Current Project State
-- Transitioned to **Phase 6: Conversational Memory & Session Management**.
-- **Phase 5: Agentic Routing** is completed.
-- **Phase 1, 2, 3, 3.5 & 4** are completed.
+- **Phase 8: Robust Tool Calling Layer & System Hardening** is completed.
+- **Phases 1–7** (Foundation → RAG → Hybrid RAG → Observability → Agentic Routing → Conversational Memory → Auth → Reliability) are all completed.
 - The fundamental directory structure (`backend/` and `frontend/`) has been initialized.
 - `README.md` and `steps.md` are actively maintained.
-- FastAPI backend configured with an initial file upload API endpoint (`/api/upload`) and CORS.
-- React frontend (Vite) set up with a dark-mode, glassmorphism UI indicating the project's identity as a multi-agent platform.
+- FastAPI backend configured with session-scoped endpoints, JWT auth, rate limiting, session GC, and parallel tool calling.
+- React frontend (Vite) features a premium two-column chat UI with async upload race-condition fix and XSS-safe Markdown rendering.
 
 ## What Was Implemented
 - Created project foundation documentation.
@@ -16,23 +15,23 @@
 - Created `main.py` with FastAPI setup.
 - Scaffolding of React frontend via `create-vite`.
 - Designed professional `App.jsx` and `index.css` reflecting a serious AI platform aesthetic.
-- **Phase 2 (Current):** Added offline RAG dependencies (`langchain`, `faiss-cpu`, `langchain-huggingface`, `pypdf`) and implemented `DocumentProcessor` service.
+- **Phase 2:** Added offline RAG dependencies (`langchain`, `faiss-cpu`, `langchain-huggingface`, `pypdf`) and implemented `DocumentProcessor` service.
 - Wired the `/api/upload` endpoint to parse PDFs, chunk text using `RecursiveCharacterTextSplitter`, and index it using HuggingFace embeddings (`all-MiniLM-L6-v2`) into a local FAISS vector store.
 - Implemented `QueryProcessor` utilizing Google Gemini (`gemini-2.5-flash`) via `langchain-google-genai` to generate highly reliable, grounded answers from FAISS retrieved chunks.
 - Created `/api/query` POST endpoint utilizing Pydantic schemas (`QueryRequest`) to enforce data structures.
-- **Phase 3 (Current):** Refactored UI and backend endpoints to support batch multi-file uploads for document comparison.
+- **Phase 3:** Refactored UI and backend endpoints to support batch multi-file uploads for document comparison.
 - Added `/api/clear` endpoint to wipe knowledge base for fresh sessions.
 - Injected strict filename metadata into chunk indexing for precise traceability.
 - Integrated `rank_bm25` to build a local keyword statistical index alongside FAISS.
 - Refactored `QueryProcessor` to use an `EnsembleRetriever` (FAISS 60%, BM25 40%), effectively merging semantic and keyword search, expanding the retrieval limit to 10 chunks to avoid multi-doc comparison blindness.
-- **Phase 3.5 (Current):** Replaced `pypdf` with `pymupdf` for high-speed, robust document extraction.
+- **Phase 3.5:** Replaced `pypdf` with `pymupdf` for high-speed, robust document extraction.
 - Refactored `main.py` to process uploads asynchronously via FastAPI `BackgroundTasks`, returning a `job_id` to prevent browser timeouts.
 - Upgraded the React frontend (`App.jsx`) to continuously poll the `job_id` status and display real-time async processing updates.
 - Overhauled the `/api/query` endpoint to yield `StreamingResponse` via Server-Sent Events (SSE).
 - Upgraded the React chat UI to decode the `ReadableStream` dynamically, creating a word-by-word typing effect directly from Gemini's generative chain.
 - **Phase 4:** Integrated LangSmith for enterprise-grade observability.
 - Added `@traceable` decorators to Python backend functions to generate granular execution latency dashboards.
-- **Phase 5 (Current):** Integrated LangGraph for Agentic Routing.
+- **Phase 5:** Integrated LangGraph for Agentic Routing.
 - Implemented state-machine routing (`AgentOrchestrator`) utilizing structured Pydantic classifications to steer query executions into specialized single-document RAG vs. multi-document comparison paths.
 - **Bug Fix (Startup Error):** Resolved a server startup crash (`ImportError` on `EnsembleRetriever` from `langchain_community.retrievers`) by introducing a robust, version-agnostic import block (falling back from `langchain.retrievers` -> `langchain_classic.retrievers` -> `langchain_community.retrievers`) ensuring immediate compatibility with modern LangChain structures.
 - **UI/UX & Routing Stream Overhaul:**
@@ -40,7 +39,7 @@
   - Upgraded `index.css` with premium CSS styles for headers, lists, code panels, and comparison tables using modern typography, glassmorphism, responsive alignment, and sleek neon accents.
   - Fixed the metadata display inconsistency where non-PDF documents (Markdown and Text files) showed broken `(Page ?)` markers by implementing a robust numeric page validation check in `App.jsx` that hides the page count completely when it is missing or invalid.
   - Reinforced routing token containment within `backend/main.py` by filtering the LangGraph stream strictly on the `"generator"` event tag to drop router classification chunks (such as `{"route": "compare_rag"}`) in real time, preventing them from leaking into the user's UI.
-- **Phase 6 (Completed):** Integrated Conversational Memory & Session Management. (Later the session folder expiry date to be set)
+- **Phase 6 (Completed):** Integrated Conversational Memory & Session Management.
 - Integrated MongoDB using `motor` to persistently store chat history and session metadata.
 - Implemented multi-tenant session isolation, dynamically routing FAISS vector DBs and BM25 `.pkl` files to `storage/sessions/<session_id>/` to prevent cross-contamination between different chat threads.
 - Built a query condensation/rewriter node into the LangGraph state machine. It retrieves the master prompt and the last 5 turns of conversation to rewrite follow-up queries, preserving context while avoiding forced comparisons during entity shifts (e.g. asking "Google?").
@@ -63,18 +62,33 @@
 - Integrated a secondary API key, `GROQ_API_KEY2`, acting as a final load balancer. If the primary Groq fallback fails due to limits, the system dynamically reroutes traffic to the secondary fallback without dropping the user's request.
 - Removed LangChain's internal default exponential backoff retries (`max_retries=0`) across all LLMs to guarantee immediate, zero-delay failovers during outages.
 - Implemented intelligent Context Truncation in backend chat history aggregation, safeguarding fallback LLMs against maximum context length crashes (Error 400).
+- **Phase 8 (Completed):** Robust Tool Calling Layer & System Hardening.
+- **[Pillar 1] Parallel Tool Execution:** Refactored `execute_tool_calling_agent` to collect all tool calls from a single LLM turn into a `tasks` list and execute them concurrently with `asyncio.gather`. Per-tool error handling returns failures as `ToolMessage` content rather than raising exceptions, so the agent loop self-corrects without crashing.
+- **[Pillar 2] Groq Tool-Calling Fallback:** Tools are bound to both the primary Gemini model and all configured Groq fallback LLMs (`llama-3.3-70b-versatile`). If Gemini fails during the agentic loop, the system transparently falls over to the Groq tool caller via LangChain's `.with_fallbacks()` chain.
+- **[Pillar 3] `knowledge_base_search` Tool:** Added a session-scoped `knowledge_base_search` tool built via a factory function in `tools.py`. This gives the agentic tool caller direct access to the local FAISS+BM25 knowledge base alongside external tools, enabling fully hybrid agent-RAG workflows in a single agent turn.
+- **[Pillar 4] HuggingFace Embeddings Singleton:** Created `backend/services/embeddings_manager.py` with a class-level `_instance` cache. All `DocumentProcessor` and `QueryProcessor` instances now share the exact same `HuggingFaceEmbeddings` object in memory, eliminating the ~1.5s PyTorch model load on every request.
+- **[Pillar 5] Session ID Path Traversal Prevention:** Enforced strict regex validation (`^[a-zA-Z0-9_]{3,50}$`) on `session_id` at three layers: inside `DocumentProcessor.__init__`, `QueryProcessor.__init__`, and a new `validate_session_id()` FastAPI helper called on every session-scoped endpoint. Invalid or traversal-containing IDs return HTTP 400 immediately.
+- **[Pillar 6] Automatic Session Garbage Collection:** Registered an `asyncio`-based background task in the FastAPI lifespan context manager. The `session_garbage_collection_loop` runs every 12 hours and deletes any `storage/sessions/` directory that is either older than 7 days (expired TTL) or not present in the MongoDB sessions collection (orphaned). The `default` directory is exempt.
+- **[Pillar 7] XSS Link Sanitization:** The `parseInlineMarkdown` helper in `App.jsx` now validates each Markdown link URL against an explicit protocol allowlist (`http://`, `https://`, `mailto:`, `tel:`, `file://`, relative paths). Any URL matching `javascript:`, `vbscript:`, `data:`, or any other scheme is rendered as a disabled, strikethrough `<span>` with a blocked tooltip, eliminating AI-generated XSS vectors.
+- **[Pillar 8] Session Race Condition Fix:** Converted `handleUploadClick` in `App.jsx` from a synchronous call to a fully `async/await` function. The hidden file input is only `.click()`-ed after the backend confirms session creation, preventing uploads from targeting a non-existent `session_id`.
+- **[Pillar 9] Progressive Query Rewrite Degradation Fix:** The `rewrite_query` state node now reads `state.get("original_query")` (set once on first entry) rather than the mutable `state["query"]`. This prevents the self-correction retry loop from re-reformulating an already-reformulated query, which previously caused progressive context stripping over successive retries.
+- Created and written `backend/test_prod_tooling.py` with automated test cases covering: embeddings singleton identity, session ID path traversal blocking, XSS link sanitization logic, and `asyncio.gather` parallel execution timing validation.
 
 ## Pending Tasks
 - [x] Transition to Phase 6 (Conversational Memory & Session Management).
 - [x] Transition to Phase 7 (Reliability & Control Layer).
+- [x] Transition to Phase 8 (Robust Tool Calling Layer & System Hardening).
+- [ ] Run full end-to-end manual verification: parallel tool calls, XSS link injection, upload race condition.
+- [ ] Transition to Phase 9 (Evaluation Layer).
 - [ ] Final Testing and Project Wrap-up.
 
 ## Current Limitations
-- Phase 6 is complete, but session directories on disk currently persist indefinitely; a garbage collection or expiry date logic needs to be implemented later.
-- No semantic routing guardrails or strict JSON structural validations are placed on the final generation output yet.
+- No semantic routing guardrails or strict JSON structural validations are placed on the final generation output yet (planned for Phase 9).
+- The tool-calling agent's synthesis step does not yet stream tokens; it falls back to a non-streaming invocation if the final streaming call fails.
+- `upload_jobs` is an in-memory dictionary; it will not survive server restarts. A Redis/DB-backed job store is needed for production.
 
 ## Next Milestone
-- Phase 7: Implement Reliability, Guardrails, and Control Layer to validate LLM outputs and enforce system safety policies.
+- Phase 9: Evaluation Layer — add automated LLM output evaluation metrics (faithfulness, answer relevance, context precision) using frameworks like RAGAS or DeepEval, and surface evaluation scores in the LangSmith traces.
 
 ## Changed Files
 - `README.md`
@@ -86,6 +100,10 @@
 - `backend/services/document_processor.py`
 - `backend/services/query_processor.py`
 - `backend/services/auth.py`
+- `backend/services/agent_orchestrator.py`
+- `backend/services/tools.py`
+- `backend/services/embeddings_manager.py` *(new — Phase 8)*
+- `backend/test_prod_tooling.py` *(new — Phase 8)*
 - `frontend/src/index.css`
 - `frontend/src/App.jsx`
 
@@ -95,5 +113,9 @@
 - Selected `HuggingFaceEmbeddings` with `all-MiniLM-L6-v2` for the initial embedding model to ensure the system can run offline, fast, and completely free without cloud API limits.
 - Selected **Google Gemini 2.5 Flash** (`gemini-2.5-flash`) via `langchain-google-genai` for the generation layer to leverage its massive context, cost-effectiveness, and speed, replacing the initial mock/OpenAI plans.
 - Moved RAG logic into dedicated `DocumentProcessor` and `QueryProcessor` classes in `backend/services/` to keep `main.py` clean, adhering to solid engineering practices.
-- **Phase 3 Design Choice:** Rebuilt the BM25 statistical model on every multi-file upload instead of trying to patch an existing index, favoring reliability and math correctness. 
+- **Phase 3 Design Choice:** Rebuilt the BM25 statistical model on every multi-file upload instead of trying to patch an existing index, favoring reliability and math correctness.
 - Increased retrieval chunk limit to `k=10` to guarantee cross-document context is retrieved during multi-doc comparison, fully utilizing Gemini's massive 1M context window without risking overflow.
+- **Phase 8 Design Choice — Embeddings Singleton over DI:** A class-level singleton was chosen over FastAPI's `Depends`-based dependency injection for embeddings because it needs to be shared across background tasks (non-request contexts), not just route handlers. The singleton pattern guarantees a single PyTorch model load regardless of how many non-async background workers are active.
+- **Phase 8 Design Choice — Per-Tool Error Isolation:** Rather than catching a tool-level exception and aborting the entire agent loop, errors are stringified and returned as `ToolMessage` content. This allows the LLM to reason about the failure and either retry with a corrected input or pivot to another tool, making the agent significantly more robust under transient failures.
+- **Phase 8 Design Choice — Factory Function for Session-Scoped Tool:** The `knowledge_base_search` tool must carry a reference to the session's `QueryProcessor`. Wrapping it in a factory (`create_knowledge_base_search_tool`) creates a new closure per `AgentOrchestrator` instance without polluting the global tool registry, ensuring strict session isolation.
+- **Phase 8 Design Choice — GC via Lifespan Background Task:** The session GC loop is launched as an `asyncio.create_task` inside FastAPI's `asynccontextmanager` lifespan, rather than a cron job or OS scheduler. This keeps the cleanup logic inside the application process with access to the MongoDB client, supports graceful cancellation on shutdown, and requires zero external infrastructure.

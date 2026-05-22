@@ -13,7 +13,9 @@ import os
 import shutil
 import tempfile
 import json
-from datetime import datetime
+import re
+import asyncio
+from datetime import datetime, timedelta
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from services.document_processor import DocumentProcessor
@@ -22,6 +24,7 @@ from services.agent_orchestrator import AgentOrchestrator
 from services.auth import hash_password, verify_password, create_access_token, get_current_user
 
 # Load environment variables
+# Set strict warnings config
 load_dotenv()
 
 import warnings
@@ -36,6 +39,66 @@ if not MONGO_URI:
 db_client = AsyncIOMotorClient(MONGO_URI) if MONGO_URI else None
 db = db_client.nexusai if db_client else None
 
+async def session_garbage_collection_loop(app_db):
+    """
+    Background loop that runs every 12 hours to clean up expired or orphaned session directories.
+    Deletes folders under storage/sessions/ that:
+    1. Are older than 7 days, OR
+    2. Do not exist in the sessions collection in MongoDB (orphaned directories).
+    """
+    print("NexusAI GC: Background session garbage collector initialized.")
+    while True:
+        try:
+            storage_dir = os.path.join("storage", "sessions")
+            if os.path.exists(storage_dir):
+                now = datetime.utcnow()
+                cutoff_time = now - timedelta(days=7)
+                
+                # Fetch all active session IDs from MongoDB
+                active_session_ids = set()
+                if app_db is not None:
+                    try:
+                        cursor = app_db.sessions.find({}, {"session_id": 1})
+                        sessions = await cursor.to_list(length=10000)
+                        active_session_ids = {s["session_id"] for s in sessions if "session_id" in s}
+                    except Exception as db_err:
+                        print(f"NexusAI GC warning: Failed to fetch active sessions from DB: {db_err}")
+                
+                # Scan directory
+                for session_dir_name in os.listdir(storage_dir):
+                    dir_path = os.path.join(storage_dir, session_dir_name)
+                    if not os.path.isdir(dir_path):
+                        continue
+                        
+                    # Check age of the directory (based on modification time)
+                    try:
+                        mtime = datetime.utcfromtimestamp(os.path.getmtime(dir_path))
+                    except Exception:
+                        mtime = now
+                        
+                    # Deletion conditions:
+                    # 1. Directory is older than 7 days
+                    # 2. Directory is not in the database and DB is online (meaning it's orphaned)
+                    is_expired = mtime < cutoff_time
+                    is_orphaned = app_db is not None and session_dir_name not in active_session_ids
+                    
+                    # Ensure we don't delete "default" session directory unless orphaned/expired
+                    if session_dir_name == "default":
+                        continue
+                        
+                    if is_expired or is_orphaned:
+                        print(f"NexusAI GC: Deleting {'expired' if is_expired else 'orphaned'} session directory: {dir_path}")
+                        try:
+                            shutil.rmtree(dir_path)
+                        except Exception as rm_err:
+                            print(f"NexusAI GC error: Failed to delete {dir_path}: {rm_err}")
+                            
+        except Exception as err:
+            print(f"NexusAI GC: Error during garbage collection run: {err}")
+            
+        # Sleep for 12 hours
+        await asyncio.sleep(43200)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if db_client is not None:
@@ -47,9 +110,26 @@ async def lifespan(app: FastAPI):
             print("==================================================")
         except Exception as e:
             print(f"NexusAI: Failed to connect to MongoDB: {e}")
+            
+    # Launch GC background task
+    gc_task = asyncio.create_task(session_garbage_collection_loop(db))
     yield
+    # Cancel GC task on shutdown
+    gc_task.cancel()
+    try:
+        await gc_task
+    except asyncio.CancelledError:
+        pass
+        
     if db_client is not None:
         db_client.close()
+
+def validate_session_id(session_id: str):
+    if not re.match(r"^[a-zA-Z0-9_]{3,50}$", session_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid session ID format: {session_id}"
+        )
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
@@ -156,6 +236,7 @@ async def create_session(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, current_user: dict = Depends(get_current_user)):
+    validate_session_id(session_id)
     if db is None:
         return {"messages": []}
     
@@ -172,6 +253,7 @@ async def get_session_messages(session_id: str, current_user: dict = Depends(get
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str, current_user: dict = Depends(get_current_user)):
+    validate_session_id(session_id)
     if db is not None:
         # Verify session ownership
         session = await db.sessions.find_one({"session_id": session_id, "username": current_user["username"]})
@@ -233,6 +315,7 @@ async def upload_document(
     session_id: str = Form("default"),
     current_user: dict = Depends(get_current_user)
 ):
+    validate_session_id(session_id)
     # Verify session ownership
     if db is not None:
         session = await db.sessions.find_one({"session_id": session_id, "username": current_user["username"]})
@@ -265,6 +348,7 @@ def get_upload_status(job_id: str, current_user: dict = Depends(get_current_user
 
 @app.delete("/api/clear")
 async def clear_knowledge_base(session_id: str = "default", current_user: dict = Depends(get_current_user)):
+    validate_session_id(session_id)
     if db is not None:
         session = await db.sessions.find_one({"session_id": session_id, "username": current_user["username"]})
         if not session:
@@ -288,6 +372,7 @@ class QueryRequest(BaseModel):
 @app.post("/api/query")
 @limiter.limit("30/minute")
 async def query_document(request: Request, query_request: QueryRequest, current_user: dict = Depends(get_current_user)):
+    validate_session_id(query_request.session_id)
     if db is not None:
         # Verify session ownership
         session = await db.sessions.find_one({"session_id": query_request.session_id, "username": current_user["username"]})
@@ -343,6 +428,8 @@ async def query_document(request: Request, query_request: QueryRequest, current_
                 # Consume node and runnable execution events in real-time
                 async for event in orchestrator.graph.astream_events({"query": query_request.query, "chat_history": chat_history_str}, version="v2"):
                     kind = event["event"]
+
+                    # ── Token streaming from any generation LLM ──────────────────
                     if kind == "on_chat_model_stream":
                         if "generator" in event.get("tags", []):
                             token = event["data"]["chunk"].content
@@ -350,7 +437,25 @@ async def query_document(request: Request, query_request: QueryRequest, current_
                                 streamed_any = True
                                 full_assistant_response += token
                                 yield f"data: {json.dumps({'text': token})}\n\n"
-                                
+
+                    # ── Real-time tool status: tool invocation started ────────────
+                    elif kind == "on_tool_start":
+                        tool_name = event.get("name", "unknown_tool")
+                        tool_input = event["data"].get("input", {})
+                        # Emit a tool_status frame so the frontend can display progress
+                        yield f"data: {json.dumps({'tool_status': 'start', 'tool_name': tool_name, 'tool_input': str(tool_input)})}\n\n"
+                        print(f"NexusAI SSE: tool '{tool_name}' started with input: {tool_input}")
+
+                    # ── Real-time tool status: tool invocation completed ──────────
+                    elif kind == "on_tool_end":
+                        tool_name = event.get("name", "unknown_tool")
+                        tool_output = event["data"].get("output", "")
+                        # Truncate long outputs in the status frame (full output is embedded in the answer)
+                        truncated_output = str(tool_output)[:300] + "..." if len(str(tool_output)) > 300 else str(tool_output)
+                        yield f"data: {json.dumps({'tool_status': 'end', 'tool_name': tool_name, 'tool_output': truncated_output})}\n\n"
+                        print(f"NexusAI SSE: tool '{tool_name}' completed.")
+
+                    # ── Capture sources/non-streamed answers from RAG nodes ───────
                     elif kind == "on_chain_end" and event["name"] in ["execute_simple_rag", "execute_compare_rag", "execute_guardrail_block"]:
                         output = event["data"]["output"]
                         if isinstance(output, dict):
@@ -360,7 +465,19 @@ async def query_document(request: Request, query_request: QueryRequest, current_
                             if "sources" in output:
                                 final_sources = output['sources']
                                 yield f"data: {json.dumps({'sources': final_sources})}\n\n"
-                                
+
+                    # ── Capture tool-calling agent final sources/answer ───────────
+                    elif kind == "on_chain_end" and event["name"] == "execute_tool_calling_agent":
+                        output = event["data"]["output"]
+                        if isinstance(output, dict):
+                            if not streamed_any and "answer" in output:
+                                full_assistant_response = output['answer']
+                                yield f"data: {json.dumps({'text': output['answer']})}\n\n"
+                            if "sources" in output and output["sources"]:
+                                final_sources = output['sources']
+                                # Emit tool sources so the frontend can render a tool-log panel
+                                yield f"data: {json.dumps({'tool_sources': final_sources})}\n\n"
+
                 # Save assistant response after stream is complete
                 if db is not None:
                     await db.chat_history.insert_one({

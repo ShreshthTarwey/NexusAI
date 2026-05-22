@@ -249,11 +249,80 @@ const parseInlineMarkdown = (text) => {
     if (part.startsWith('[') && part.includes('](') && part.endsWith(')')) {
       const match = part.match(/^\[(.*?)\]\((.*?)\)$/);
       if (match) {
-        return <a key={index} href={match[2]} target="_blank" rel="noopener noreferrer" className="markdown-link">{match[1]}</a>;
+        const url = match[2].trim();
+        const urlLower = url.toLowerCase();
+        const hasProtocol = /^[a-z]+:/i.test(urlLower);
+        let isSafe = false;
+        
+        if (!hasProtocol) {
+          // Relative URLs are safe
+          isSafe = true;
+        } else {
+          // Allow http, https, mailto, tel, and file (for local workspace links)
+          isSafe = urlLower.startsWith('http://') || 
+                   urlLower.startsWith('https://') || 
+                   urlLower.startsWith('mailto:') || 
+                   urlLower.startsWith('tel:') || 
+                   urlLower.startsWith('file://');
+        }
+        
+        if (isSafe && !/^\s*javascript:/i.test(url)) {
+          return <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="markdown-link">{match[1]}</a>;
+        } else {
+          return <span key={index} className="markdown-link-disabled" title="Blocked potentially unsafe link" style={{ textDecoration: 'line-through', opacity: 0.6 }}>{match[1]}</span>;
+        }
       }
     }
     return part;
   });
+};
+
+// Collapsible Tool Execution Log — shown inside each assistant message that used tools
+const ToolExecutionLog = ({ entries }) => {
+  const [open, setOpen] = useState(false);
+
+  const toolIcons = {
+    web_search: '🌐',
+    safe_calculator: '🧮',
+  };
+
+  return (
+    <div className="tool-log-container">
+      <button
+        className={`tool-log-toggle ${open ? 'open' : ''}`}
+        onClick={() => setOpen(prev => !prev)}
+        aria-expanded={open}
+      >
+        <span className="tool-log-toggle-icon">{open ? '▾' : '▸'}</span>
+        <span>Tool Execution Log</span>
+        <span className="tool-log-count">{entries.length} step{entries.length !== 1 ? 's' : ''}</span>
+      </button>
+
+      {open && (
+        <div className="tool-log-body">
+          {entries.map((entry, i) => (
+            <div key={i} className="tool-log-entry">
+              <div className="tool-log-header">
+                <span className="tool-log-icon">{toolIcons[entry.name] || '🔧'}</span>
+                <span className="tool-log-name">{entry.name}</span>
+                <span className="tool-log-step">Step {i + 1}</span>
+              </div>
+              <div className="tool-log-field">
+                <span className="tool-log-label">Input</span>
+                <span className="tool-log-value">{String(entry.input)}</span>
+              </div>
+              {entry.output && (
+                <div className="tool-log-field">
+                  <span className="tool-log-label">Output</span>
+                  <span className="tool-log-value tool-log-output">{String(entry.output)}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 };
 
 function App() {
@@ -279,6 +348,8 @@ function App() {
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
   const [isQuerying, setIsQuerying] = useState(false);
+  const [activeTool, setActiveTool] = useState(null); // { name, input } | null
+  const [toolLog, setToolLog] = useState([]); // [{ name, input, output }] for current streaming msg
   const messagesEndRef = useRef(null);
 
   // Authenticated custom fetch wrapper
@@ -374,8 +445,10 @@ function App() {
       const data = await res.json();
       setCurrentSession(data.session_id);
       fetchSessions();
+      return data.session_id;
     } catch (e) {
       console.error("Failed to create new chat", e);
+      return null;
     }
   };
 
@@ -405,13 +478,15 @@ function App() {
     }
   };
 
-  const handleUploadClick = () => {
+  const handleUploadClick = async () => {
     if (currentSession === 'default') {
-        handleNewChat();
+      const newSessionId = await handleNewChat();
+      if (!newSessionId) {
+        alert("Failed to initialize a new session. Please try again.");
+        return;
+      }
     }
-    setTimeout(() => {
-        fileInputRef.current.click();
-    }, 100);
+    fileInputRef.current.click();
   };
 
   const handleClearDatabase = async () => {
@@ -490,6 +565,8 @@ function App() {
     setMessages(prev => [...prev, userMessage]);
     setQuery('');
     setIsQuerying(true);
+    setActiveTool(null);
+    setToolLog([]);
 
     try {
       const res = await apiFetch('/api/query', {
@@ -499,12 +576,15 @@ function App() {
       });
       if (!res.ok) throw new Error('Query failed');
 
-      setMessages(prev => [...prev, { role: 'assistant', content: '', sources: [] }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: '', sources: [], toolSources: [] }]);
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let done = false;
       let buffer = '';
+      // Local log accumulated during stream (to set on message at end)
+      let currentToolLog = [];
+      let pendingToolEntry = null;
 
       while (!done) {
         const { value, done: readerDone } = await reader.read();
@@ -520,7 +600,8 @@ function App() {
                 const jsonStr = line.replace(/^data:\s*/, '');
                 if (!jsonStr.trim()) continue;
                 const data = JSON.parse(jsonStr);
-                
+
+                // ── Text token ──────────────────────────────────────────────
                 if (data.text) {
                   setMessages(prev => {
                     const newMessages = [...prev];
@@ -532,6 +613,8 @@ function App() {
                     return newMessages;
                   });
                 }
+
+                // ── Document sources ─────────────────────────────────────────
                 if (data.sources) {
                   setMessages(prev => {
                     const newMessages = [...prev];
@@ -543,6 +626,37 @@ function App() {
                     return newMessages;
                   });
                 }
+
+                // ── Tool sources (execution log) ──────────────────────────────
+                if (data.tool_sources) {
+                  setMessages(prev => {
+                    const newMessages = [...prev];
+                    const lastMsgIndex = newMessages.length - 1;
+                    newMessages[lastMsgIndex] = {
+                      ...newMessages[lastMsgIndex],
+                      toolSources: data.tool_sources
+                    };
+                    return newMessages;
+                  });
+                }
+
+                // ── Tool status: started ──────────────────────────────────────
+                if (data.tool_status === 'start') {
+                  pendingToolEntry = { name: data.tool_name, input: data.tool_input, output: null };
+                  setActiveTool({ name: data.tool_name, input: data.tool_input });
+                }
+
+                // ── Tool status: completed ────────────────────────────────────
+                if (data.tool_status === 'end') {
+                  if (pendingToolEntry) {
+                    pendingToolEntry.output = data.tool_output;
+                    currentToolLog = [...currentToolLog, pendingToolEntry];
+                    setToolLog([...currentToolLog]);
+                    pendingToolEntry = null;
+                  }
+                  setActiveTool(null);
+                }
+
               } catch (e) {
                 console.warn("Failed to parse SSE line", e);
               }
@@ -550,10 +664,23 @@ function App() {
           }
         }
       }
-      
+
+      // Attach accumulated tool log to the last message
+      if (currentToolLog.length > 0) {
+        setMessages(prev => {
+          const newMessages = [...prev];
+          const lastMsgIndex = newMessages.length - 1;
+          newMessages[lastMsgIndex] = {
+            ...newMessages[lastMsgIndex],
+            toolLog: currentToolLog
+          };
+          return newMessages;
+        });
+      }
+
       // Update session title dynamically after first query completes
       fetchSessions();
-      
+
     } catch (error) {
       setMessages(prev => [...prev, {
         role: 'assistant',
@@ -561,6 +688,8 @@ function App() {
       }]);
     } finally {
       setIsQuerying(false);
+      setActiveTool(null);
+      setToolLog([]);
     }
   };
 
@@ -843,11 +972,16 @@ function App() {
                 {messages.map((msg, index) => (
                   <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}>
                     <MarkdownRenderer content={msg.content} />
-                    {msg.sources && msg.sources.length > 0 && (
+                    {/* ── Tool Execution Log (collapsible) ── */}
+                    {msg.toolLog && msg.toolLog.length > 0 && (
+                      <ToolExecutionLog entries={msg.toolLog} />
+                    )}
+                    {/* ── Document Sources ── */}
+                    {msg.sources && msg.sources.filter(s => !s.metadata?.source_file?.startsWith('tool:')).length > 0 && (
                       <div className="sources-container">
                         <div style={{ marginBottom: '0.5rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Retrieved Contexts:</div>
                         <div className="sources-list">
-                          {msg.sources.map((src, idx) => {
+                          {msg.sources.filter(s => !s.metadata?.source_file?.startsWith('tool:')).map((src, idx) => {
                             const pageVal = src.metadata?.page;
                             const hasValidPage = pageVal !== undefined && pageVal !== null && !isNaN(Number(pageVal));
                             return (
@@ -864,7 +998,21 @@ function App() {
                 ))}
                 {isQuerying && (
                   <div className="message assistant-message">
-                    <div className="loading-spinner" style={{ width: '1.5rem', height: '1.5rem', margin: 0 }}></div>
+                    {activeTool ? (
+                      <div className="tool-status-badge">
+                        <span className="tool-status-icon">
+                          {activeTool.name === 'web_search' ? '🌐' : '🧮'}
+                        </span>
+                        <span className="tool-status-text">
+                          {activeTool.name === 'web_search'
+                            ? `Searching the web for: "${activeTool.input}"`
+                            : `Calculating: ${activeTool.input}`}
+                        </span>
+                        <span className="tool-status-pulse"></span>
+                      </div>
+                    ) : (
+                      <div className="loading-spinner" style={{ width: '1.5rem', height: '1.5rem', margin: 0 }}></div>
+                    )}
                   </div>
                 )}
                 <div ref={messagesEndRef} />

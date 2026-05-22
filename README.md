@@ -4,7 +4,7 @@ NexusAI is a production-grade Agentic AI platform focused on Hybrid RAG, Multi-A
 
 ## Architecture
 
-The system evolves progressively, currently standing at **Phase 7: Reliability & Control Layer**.
+The system evolves progressively, currently standing at **Phase 8: Robust Tool Calling Layer & System Hardening**.
 
 **High-Level Architecture (Target):**
 User -> Frontend UI -> FastAPI Backend -> LangGraph State Machine -> Supervisor/Orchestrator Agent -> Specialized Agents -> Hybrid Retrieval Layer -> Validation + Reliability Layer -> Control Layer -> Memory Layer -> Evaluation Layer -> Final Response Generator
@@ -12,11 +12,15 @@ User -> Frontend UI -> FastAPI Backend -> LangGraph State Machine -> Supervisor/
 ## Tech Stack
 - **Frontend:** React (Vite) with Custom Stateful Markdown Block Parser (Zero Dependency)
 - **Backend:** FastAPI (Python)
-- **Vector DB:** FAISS
-- **Embeddings:** HuggingFace `all-MiniLM-L6-v2` (Local/Offline)
+- **Vector DB:** FAISS (session-scoped per chat)
+- **Keyword Index:** BM25 (`rank_bm25`) — rebuilt on every upload
+- **Embeddings:** HuggingFace `all-MiniLM-L6-v2` (Local/Offline, singleton-cached)
 - **LLM:** Google Gemini 2.5 Flash (`gemini-2.5-flash`)
+- **Fallback LLMs:** Groq `llama-3.1-8b-instant` (routing) & `llama-3.3-70b-versatile` (generation + tool-calling)
 - **Orchestration:** LangGraph (Conditional State Machine Router)
 - **Observability:** LangSmith (Latencies & Execution Tracing)
+- **Rate Limiting:** `slowapi`
+- **Session GC:** Async background loop (12-hour sweep, 7-day TTL)
 
 ## Core Architectural Guardrails & Defenses
 - **Zero-Dependency Stateful Block-Markdown Parser:** A line-by-line custom block parser in the React frontend that dynamically compiles complex headers, bolding, blockquotes, nested list items (2/4 space indents), fenced code blocks, and structured comparison tables directly from chunk streams without any npm library bloat.
@@ -35,6 +39,18 @@ User -> Frontend UI -> FastAPI Backend -> LangGraph State Machine -> Supervisor/
 5. Configure environmental variables: Create/edit a `.env` file in the `backend/` directory and add:
    ```env
    GEMINI_API_KEY=your_gemini_api_key_here
+   MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/nexusai
+   JWT_SECRET=your_jwt_secret_key_here
+   JWT_ALGORITHM=HS256
+
+   # Optional — enables Groq fallback for Gemini outages/rate limits
+   GROQ_API_KEY=your_groq_api_key_here
+   GROQ_API_KEY2=your_secondary_groq_api_key_here
+
+   # Optional — enables LangSmith observability tracing
+   LANGCHAIN_TRACING_V2=true
+   LANGCHAIN_API_KEY=your_langsmith_api_key_here
+   LANGCHAIN_PROJECT=nexusai
    ```
 6. Run the server: `uvicorn main:app --reload`
 
@@ -140,13 +156,16 @@ with FileLock(self.lock_path, timeout=120):
 ### Phase 3: Agent Orchestration (Asking a Question)
 
 **1. The LangGraph State Machine (`backend/services/agent_orchestrator.py`):**
-When the `/api/query` endpoint is hit, the `AgentOrchestrator` uses a highly-prompted Router LLM (Gemini 2.5 Flash, falling back to Llama 3.1 8B via Groq if Gemini fails) to decide if the query is `simple_rag` or `compare_rag`.
+When the `/api/query` endpoint is hit, the `AgentOrchestrator` uses a highly-prompted Router LLM (Gemini 2.5 Flash, falling back to Llama 3.1 8B via Groq if Gemini fails) to classify the query into one of three routes:
+- `simple_rag` — single document, single-source fact retrieval.
+- `compare_rag` — cross-document comparison or synthesis across multiple files.
+- `tool_calling` — real-time web search, math calculations, or hybrid agent-RAG tasks.
 
 ```python
 # Inside backend/services/agent_orchestrator.py
 def route_intent(self, state: AgentState) -> Dict:
     decision = self.router_llm.invoke(prompt)
-    route = decision.route if decision.route in ["simple_rag", "compare_rag"] else "simple_rag"
+    route = decision.route if decision.route in ["simple_rag", "compare_rag", "tool_calling"] else "simple_rag"
     return {"route": route}
 ```
 
@@ -342,25 +361,28 @@ Enhanced all evaluation LLM calls (Guardrail, Router, Grader) by using LangChain
 **5. Multi-Tier API Fallbacks & Load Balancing (Pillar 5):**
 Constructed a highly resilient API layer that cascades through LLMs during outages or rate-limiting (HTTP 429) events. If the primary Gemini model fails (e.g. max tokens per minute exceeded), the system dynamically traps the exception in real-time and reroutes the query and context payload to a fallback Groq instance (`llama-3.1-8b` / `llama-3.3-70b`). To act as a load balancer and guarantee uptime, it supports an additional `GROQ_API_KEY2` as a secondary fallback layer. The system dynamically truncates chat history to prevent Context Window overflow crashes on smaller fallback models.
 
-**Architecture Graph:**
+**Full State Machine Architecture Graph (Phase 8):**
 ```mermaid
 graph TD
     START((START)) --> rewrite_query
     rewrite_query --> input_guardrail
-    
+
     input_guardrail -- valid --> route_intent
     input_guardrail -- invalid --> execute_guardrail_block
-    
     execute_guardrail_block --> END((END))
-    route_intent --> retrieve_documents
+
+    route_intent -- simple_rag / compare_rag --> retrieve_documents
+    route_intent -- tool_calling --> execute_tool_calling_agent
+
     retrieve_documents --> document_grader
-    
     document_grader -- relevant_simple --> execute_simple_rag
     document_grader -- relevant_compare --> execute_compare_rag
+    document_grader -- tool_calling --> execute_tool_calling_agent
     document_grader -- retry --> rewrite_query
-    
+
     execute_simple_rag --> END
     execute_compare_rag --> END
+    execute_tool_calling_agent --> END
 ```
 
 **Guardrail Node Snippet:**
@@ -378,13 +400,171 @@ def input_guardrail(self, state: AgentState) -> Dict:
 
 ---
 
+### Phase 8: Robust Tool Calling Layer & System Hardening
+
+This phase transforms NexusAI from a resilient RAG system into a **production-grade agentic platform** with parallel tool execution, strict security hardening, and zero-overhead embedding caching.
+
+**1. Parallel Tool Execution (Pillar 1):**
+The `execute_tool_calling_agent` node now dispatches all tool calls requested by the LLM in a **single agent turn** concurrently, using `asyncio.gather`. Instead of running three tools sequentially (3× latency), they all fire simultaneously and resolve in the time of the slowest single tool call. Each tool failure is isolated — an error in one tool is returned as a plain-text ToolMessage, allowing the LLM to self-correct without crashing the loop.
+
+```python
+# Inside backend/services/agent_orchestrator.py
+outputs = await asyncio.gather(*tasks)
+for (tool_name, tool_args, tool_id), tool_output in zip(tool_calls_info, outputs):
+    messages.append(ToolMessage(content=str(tool_output), tool_call_id=tool_id))
+```
+
+**2. Groq Fallback for Tool Calling (Pillar 2):**
+Tools are bound to both the primary Gemini model and all configured Groq fallback models (`llama-3.3-70b-versatile`). If Gemini fails during the tool-calling loop (rate-limit 429 or network outage), the request is automatically rerouted to the fallback tool caller without interrupting the agent loop.
+
+```python
+# Inside backend/services/agent_orchestrator.py
+gemini_with_tools = self.generation_llm.bind_tools(self.tools)
+fallback_tool_callers = [groq_gen.bind_tools(self.tools) for groq_gen in self.groq_generators]
+llm_with_tools = gemini_with_tools.with_fallbacks(fallback_tool_callers)
+```
+
+**3. New Tool — `knowledge_base_search` (Pillar 3):**
+A session-scoped `knowledge_base_search` tool is dynamically created via a factory function and injected into the agent's tool belt. This lets the tool-calling agent query the local FAISS + BM25 vector store for context *while simultaneously* running a web search or calculation — enabling hybrid agent-RAG workflows in a single step.
+
+```python
+# Inside backend/services/tools.py
+def create_knowledge_base_search_tool(query_processor):
+    @tool
+    def knowledge_base_search(query: str) -> str:
+        """Searches the local knowledge base (uploaded documents) for relevant information."""
+        docs = query_processor.retrieve_documents(query, k=5)
+        return query_processor.format_context(docs) if docs else "No relevant information found."
+    return knowledge_base_search
+```
+
+**4. HuggingFace Embeddings Singleton (Pillar 4):**
+A new `EmbeddingsManager` service lazy-loads the `all-MiniLM-L6-v2` model into a **process-level singleton** on first use. Every `DocumentProcessor` and `QueryProcessor` instance now shares the exact same in-memory model weights, eliminating the ~1.5 second PyTorch load penalty on every request.
+
+```python
+# Inside backend/services/embeddings_manager.py
+class EmbeddingsManager:
+    _instance = None
+    @classmethod
+    def get_embeddings(cls) -> HuggingFaceEmbeddings:
+        if cls._instance is None:
+            cls._instance = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        return cls._instance
+```
+
+**5. Session ID Hardening & Path Traversal Prevention (Pillar 5):**
+All `session_id` values are validated against the strict regex `^[a-zA-Z0-9_]{3,50}$` at three enforcement points: `DocumentProcessor.__init__`, `QueryProcessor.__init__`, and a new `validate_session_id()` FastAPI helper invoked on every session-scoped endpoint. Any path traversal attempt (e.g. `../admin`, `chat/../../etc`) is immediately rejected with HTTP 400.
+
+```python
+# Inside backend/main.py
+def validate_session_id(session_id: str):
+    if not re.match(r"^[a-zA-Z0-9_]{3,50}$", session_id):
+        raise HTTPException(status_code=400, detail=f"Invalid session ID format: {session_id}")
+```
+
+**6. Automatic Session Garbage Collection (Pillar 6):**
+A FastAPI lifespan background task fires every **12 hours** to sweep `storage/sessions/`. It deletes any directory that is either older than **7 days** (expired) or does not appear in the MongoDB `sessions` collection (orphaned). The `default` directory is always exempt.
+
+```python
+# Inside backend/main.py
+async def session_garbage_collection_loop(app_db):
+    while True:
+        # Scan storage/sessions/, delete expired (>7d) and orphaned dirs
+        await asyncio.sleep(43200)  # 12 hours
+```
+
+**7. XSS Link Sanitization in Markdown Renderer (Pillar 7):**
+The `parseInlineMarkdown` function in the React frontend now validates every hyperlink's protocol before rendering. Only `http://`, `https://`, `mailto:`, `tel:`, `file://`, and relative paths are allowed. Any URL starting with `javascript:`, `vbscript:`, `data:`, or any other unlisted scheme is rendered as a disabled strikethrough `<span>` with a tooltip, blocking XSS injection via AI-generated Markdown.
+
+```javascript
+// Inside frontend/src/App.jsx
+if (isSafe && !/^\s*javascript:/i.test(url)) {
+  return <a href={url} target="_blank" rel="noopener noreferrer">...</a>;
+} else {
+  return <span style={{ textDecoration: 'line-through', opacity: 0.6 }} title="Blocked unsafe link">...</span>;
+}
+```
+
+**8. Session Race Condition Fix (Pillar 8):**
+The `handleUploadClick` function in `App.jsx` was refactored from a synchronous fire-and-forget call into a fully `async/await` chain. The file picker dialog is only opened *after* the server confirms session creation, preventing the file upload from targeting a stale or non-existent `session_id`.
+
+```javascript
+// Inside frontend/src/App.jsx
+const handleUploadClick = async () => {
+  if (currentSession === 'default') {
+    const newSessionId = await handleNewChat(); // await session creation first
+    if (!newSessionId) { alert("Failed to initialize a new session."); return; }
+  }
+  fileInputRef.current.click(); // open picker only after session confirmed
+};
+```
+
+**9. Progressive Rewrite Degradation Fix (Pillar 9):**
+The `rewrite_query` node now reads from `state.get("original_query")` rather than `state["query"]` for every retry iteration. This prevents the self-correction loop from re-reformulating an already-reformulated query, which caused increasingly abstract and context-stripped search strings on successive retries.
+
+**Tool Calling Agent Loop Flow:**
+```
+User Query
+    │
+    ▼
+rewrite_query  ──► (if history: condense to standalone query)
+    │
+    ▼
+input_guardrail  ──► (block off-topic queries)
+    │
+    ▼
+route_intent  ──► classified as 'tool_calling'
+    │
+    ▼
+execute_tool_calling_agent
+    │
+    ├── SystemMessage (instructions + tool descriptions)
+    ├── HumanMessage  (user query)
+    │
+    ▼
+  LLM with tools bound (Gemini → Groq fallback)
+    │
+    ├── Response has tool_calls?
+    │       YES ──► Dispatch all tools concurrently (asyncio.gather)
+    │               ├── safe_calculator(expr)         ──► math result
+    │               ├── web_search(query)             ──► live web snippets
+    │               └── knowledge_base_search(query)  ──► local FAISS+BM25 docs
+    │               Each error is caught per-tool and returned as ToolMessage
+    │               Loop continues (max 5 iterations)
+    │
+    └── Response has NO tool_calls?
+            ──► Synthesis prompt injected
+            ──► Final answer streamed to frontend via SSE
+```
+
+---
+
 ## Folder Structure
 ```
 NexusAI/
-├── backend/          # FastAPI application
-├── frontend/         # React UI application
-├── README.md         # Project documentation
-└── steps.md          # Engineering log and progress tracker
+├── backend/
+│   ├── main.py                          # FastAPI app, endpoints, lifespan GC, session validation
+│   ├── requirements.txt                 # Python dependencies
+│   ├── .env                             # Environment variables (not committed)
+│   ├── test_prod_tooling.py             # Phase 8 automated test suite
+│   └── services/
+│       ├── __init__.py
+│       ├── auth.py                      # JWT auth, bcrypt hashing, FastAPI dependency
+│       ├── embeddings_manager.py        # HuggingFace embeddings singleton (Phase 8)
+│       ├── document_processor.py        # PDF/MD/TXT ingestion → FAISS + BM25 indexing
+│       ├── query_processor.py           # Hybrid retrieval (EnsembleRetriever) + LLM generation
+│       ├── tools.py                     # safe_calculator, web_search, knowledge_base_search
+│       └── agent_orchestrator.py        # LangGraph state machine + tool-calling agent loop
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx                      # React UI, markdown parser, SSE reader, XSS sanitizer
+│   │   └── index.css                    # Glassmorphism design system
+│   └── package.json
+├── storage/
+│   └── sessions/
+│       └── {session_id}/                # Per-session FAISS + BM25 + lock files
+├── README.md                            # Project documentation
+└── steps.md                             # Engineering log and progress tracker
 ```
 
 ## Future Roadmap
@@ -393,10 +573,10 @@ NexusAI/
 - Phase 3 & 3.5: Hybrid RAG & Ingestion Performance (Completed)
 - Phase 4: Observability & Tracing via LangSmith (Completed)
 - Phase 5: Agentic Routing via LangGraph (Completed)
-- Phase 6: Conversational Memory & Session Management (Completed) *(Note: Session folder expiry date logic to be implemented later)*
+- Phase 6: Conversational Memory & Session Management (Completed)
 - Phase 6.5: User Authentication & Security Isolation (Completed)
 - Phase 7: Reliability & Control Layer (Completed)
-- Phase 8: Tool Calling Layer(Current)
-- Phase 9: Evaluation Layer
+- Phase 8: Robust Tool Calling Layer & System Hardening (Completed)
+- Phase 9: Evaluation Layer (Upcoming)
 - Phase 10: Production Engineering
 
