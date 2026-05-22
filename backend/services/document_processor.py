@@ -1,9 +1,10 @@
 import os
 import shutil
 import pickle
+import re
 from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from services.embeddings_manager import EmbeddingsManager
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
 from langsmith import traceable
@@ -16,6 +17,10 @@ class DocumentProcessor:
     and FAISS for fast local vector retrieval.
     """
     def __init__(self, session_id: str = "default"):
+        # Strict input validation on session_id to prevent path traversal
+        if not re.match(r"^[a-zA-Z0-9_]{3,50}$", session_id):
+            raise ValueError(f"Invalid session ID format: {session_id}")
+            
         self.session_id = session_id
         self.session_dir = os.path.join("storage", "sessions", session_id)
         os.makedirs(self.session_dir, exist_ok=True)
@@ -25,8 +30,8 @@ class DocumentProcessor:
         self.bm25_path = os.path.join(self.session_dir, "bm25_retriever.pkl")
         self.lock_path = os.path.join(self.session_dir, "database.lock")
         
-        # Using a highly efficient local embedding model
-        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        # Using cached shared embeddings singleton
+        self.embeddings = EmbeddingsManager.get_embeddings()
         # Initialize text splitter for chunking documents
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,

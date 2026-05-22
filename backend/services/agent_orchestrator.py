@@ -5,10 +5,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from services.query_processor import QueryProcessor
 from pydantic import BaseModel, Field
 import os
+from langchain_core.runnables import RunnableConfig
+from services.tools import safe_calculator, web_search, create_knowledge_base_search_tool
 
 class RouterDecision(BaseModel):
     route: str = Field(
-        description="The classification of the user request. MUST be either 'simple_rag' (if the query is asking about a single document, simple fact retrieval, or single-source information) or 'compare_rag' (if the query involves comparing/contrasting multiple documents, cross-referencing files, or synthesizing a summary/comparison matrix across files)."
+        description="The classification of the user request. MUST be either 'simple_rag' (if the query is asking about a single document, simple fact retrieval, or single-source information), 'compare_rag' (if the query involves comparing/contrasting multiple documents, cross-referencing files, or synthesizing a summary/comparison matrix across files), or 'tool_calling' (if the query explicitly requests web search, math calculations, real-time facts, or external information not present in the uploaded documents)."
     )
 
 class GuardrailDecision(BaseModel):
@@ -31,6 +33,7 @@ class AgentState(TypedDict):
     chat_history: str
     retries: int
     grader_retry: bool
+    is_relevant: bool
 
 class AgentOrchestrator:
     """
@@ -41,6 +44,8 @@ class AgentOrchestrator:
         self.session_id = session_id
         self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, max_retries=1)
         self.query_processor = QueryProcessor(session_id=session_id)
+        self.kb_search_tool = create_knowledge_base_search_tool(self.query_processor)
+        self.tools = [safe_calculator, web_search, self.kb_search_tool]
         
         # Check for Groq API Keys and activate resilience layer
         groq_api_key = os.getenv("GROQ_API_KEY")
@@ -102,6 +107,7 @@ class AgentOrchestrator:
         workflow.add_node("document_grader", self.document_grader)
         workflow.add_node("execute_simple_rag", self.execute_simple_rag)
         workflow.add_node("execute_compare_rag", self.execute_compare_rag)
+        workflow.add_node("execute_tool_calling_agent", self.execute_tool_calling_agent)
         
         # Define edges
         workflow.add_edge(START, "rewrite_query")
@@ -118,7 +124,17 @@ class AgentOrchestrator:
         )
         
         workflow.add_edge("execute_guardrail_block", END)
-        workflow.add_edge("route_intent", "retrieve_documents")
+        
+        # Conditional path selection for route_intent
+        workflow.add_conditional_edges(
+            "route_intent",
+            self.decide_intent,
+            {
+                "retrieve": "retrieve_documents",
+                "tool_calling": "execute_tool_calling_agent"
+            }
+        )
+        
         workflow.add_edge("retrieve_documents", "document_grader")
         
         # Conditional path selection for Grader Self-Correction
@@ -128,12 +144,14 @@ class AgentOrchestrator:
             {
                 "relevant_simple": "execute_simple_rag",
                 "relevant_compare": "execute_compare_rag",
+                "tool_calling": "execute_tool_calling_agent",
                 "retry": "rewrite_query"
             }
         )
         
         workflow.add_edge("execute_simple_rag", END)
         workflow.add_edge("execute_compare_rag", END)
+        workflow.add_edge("execute_tool_calling_agent", END)
         
         # Compile the state machine
         self.graph = workflow.compile()
@@ -143,7 +161,7 @@ class AgentOrchestrator:
         Rewrites the query based on chat history to inject missing context (coreference resolution).
         """
         history = state.get("chat_history", "")
-        original_query = state.get("query", "")
+        original_query = state.get("original_query") or state.get("query", "")
         
         if not history.strip():
             return {"query": original_query, "original_query": original_query}
@@ -212,21 +230,30 @@ class AgentOrchestrator:
         return {"answer": "I can only answer questions related to our uploaded documents.", "sources": []}
             
     def route_intent(self, state: AgentState) -> Dict:
-        """ Analyzes query intent and decides which RAG path to execute. """
+        """ Analyzes query intent and decides which execution path to take. """
         prompt = (
             f"You are a professional routing classifier for an AI research platform.\n"
-            f"Given the user query below, determine if it is a single-document query (fact extraction, simple search) "
-            f"or if it is a multi-document query (comparing documents, summarizing cross-file trends, building a matrix).\n\n"
+            f"Given the user query below, classify its intent into one of the following:\n"
+            f"- 'simple_rag': if the query is asking about a single document, simple fact retrieval, or single-source information from uploaded documents.\n"
+            f"- 'compare_rag': if the query involves comparing/contrasting multiple documents, cross-referencing files, or synthesizing a summary/comparison matrix across files.\n"
+            f"- 'tool_calling': if the query explicitly requests web search, math calculations, real-time/current facts, or external information not present in the uploaded documents.\n\n"
             f"User Query: {state['query']}"
         )
         try:
             decision = self.router_llm.invoke(prompt)
-            route = decision.route if decision.route in ["simple_rag", "compare_rag"] else "simple_rag"
+            route = decision.route if decision.route in ["simple_rag", "compare_rag", "tool_calling"] else "simple_rag"
         except Exception as e:
             print(f"Routing classification failed: {e}. Defaulting to simple_rag.")
             route = "simple_rag"
             
         return {"route": route}
+        
+    def decide_intent(self, state: AgentState) -> str:
+        """ Evaluates conditional path edge after route classification. """
+        route = state.get("route", "simple_rag")
+        if route == "tool_calling":
+            return "tool_calling"
+        return "retrieve"
         
     def retrieve_documents(self, state: AgentState) -> Dict:
         """ Retrieves documents based on route. """
@@ -241,7 +268,8 @@ class AgentOrchestrator:
         retries = state.get("retries", 0)
         
         if not docs:
-            return {"grader_retry": False}
+            print("NexusAI Self-Correction: No documents found. Routing to tool calling.")
+            return {"grader_retry": False, "is_relevant": False}
             
         context_text = self.query_processor.format_context(docs)
         prompt = (
@@ -254,19 +282,22 @@ class AgentOrchestrator:
             if not decision.is_relevant:
                 if retries < 2:
                     print(f"NexusAI Self-Correction: Documents irrelevant. Retrying... ({retries+1}/2)")
-                    return {"grader_retry": True, "retries": retries + 1}
+                    return {"grader_retry": True, "retries": retries + 1, "is_relevant": False}
                 else:
-                    print(f"NexusAI Self-Correction: Max retries reached. Proceeding.")
-                    return {"grader_retry": False}
-            return {"grader_retry": False}
+                    print(f"NexusAI Self-Correction: Max retries reached. Proceeding to tool calling fallback.")
+                    return {"grader_retry": False, "is_relevant": False}
+            return {"grader_retry": False, "is_relevant": True}
         except Exception as e:
-            print(f"Grader failed: {e}")
-            return {"grader_retry": False}
+            print(f"Grader failed: {e}. Defaulting to relevant to avoid tool loop.")
+            return {"grader_retry": False, "is_relevant": True}
             
     def decide_grader(self, state: AgentState) -> str:
         """ Evaluates conditional path edge after grading. """
         if state.get("grader_retry", False):
             return "retry"
+        
+        if not state.get("is_relevant", True):
+            return "tool_calling"
         
         if state.get("route") == "compare_rag":
             return "relevant_compare"
@@ -353,3 +384,113 @@ class AgentOrchestrator:
             
         sources = [{"content": doc.page_content, "metadata": doc.metadata} for doc in docs]
         return {"answer": full_content, "sources": sources}
+
+    async def execute_tool_calling_agent(self, state: AgentState, config: RunnableConfig = None) -> Dict:
+        """
+        Executes a tool calling agent loop using Gemini and bound tools.
+        """
+        from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+        
+        query = state["query"]
+        history = state.get("chat_history", "")
+        
+        messages = []
+        
+        system_instructions = (
+            "You are a helpful assistant equipped with specialized tools to answer user questions.\n"
+            "You have access to the following tools:\n"
+            "- safe_calculator: Use this to calculate math expressions or verify calculations.\n"
+            "- web_search: Use this to find real-time info, facts, updates, or web search.\n"
+            "- knowledge_base_search: Use this to search the local knowledge base (uploaded documents) for relevant information.\n\n"
+            "Guidelines:\n"
+            "1. Only use tools if absolutely necessary. If you can answer directly, do so.\n"
+            "2. When using web_search, formulate a clean, targeted query.\n"
+            "3. If a tool fails or returns an error, try to correct your query/input or try a different approach.\n"
+            "4. Once you have enough information, synthesize a final, clear, and complete answer for the user."
+        )
+        
+        messages.append(SystemMessage(content=system_instructions))
+        
+        if history:
+            messages.append(SystemMessage(content=f"Conversation history:\n{history}"))
+            
+        messages.append(HumanMessage(content=query))
+        
+        # Build LLM with fallback tool callers
+        gemini_with_tools = self.generation_llm.bind_tools(self.tools)
+        fallback_tool_callers = []
+        if hasattr(self, "groq_generators") and self.groq_generators:
+            for groq_gen in self.groq_generators:
+                fallback_tool_callers.append(groq_gen.bind_tools(self.tools))
+                
+        if fallback_tool_callers:
+            llm_with_tools = gemini_with_tools.with_fallbacks(fallback_tool_callers)
+        else:
+            llm_with_tools = gemini_with_tools
+        
+        tool_results = []
+        for step in range(5):
+            response = await llm_with_tools.ainvoke(messages, config=config)
+            messages.append(response)
+            
+            if not response.tool_calls:
+                messages.pop()
+                synthesis_prompt = (
+                    "Now, synthesize the final response for the user using the tool results. "
+                    "Make it structured, clear, and professional. "
+                    "Do not mention the tools or the technical details of the execution unless directly asked. "
+                    "Only output the final response."
+                )
+                messages.append(SystemMessage(content=synthesis_prompt))
+                
+                full_content = ""
+                stream_config = config.copy() if config else RunnableConfig()
+                if "tags" not in stream_config:
+                    stream_config["tags"] = []
+                if "generator" not in stream_config["tags"]:
+                    stream_config["tags"].append("generator")
+                
+                try:
+                    async for chunk in self.generation_llm.astream(messages, config=stream_config):
+                        full_content += chunk.content
+                except Exception as stream_err:
+                    print(f"Streaming final answer failed: {stream_err}. Falling back to non-stream response.")
+                    full_content = response.content
+                
+                return {"answer": full_content, "sources": tool_results}
+                
+            # Execute tool calls in parallel using asyncio.gather
+            tasks = []
+            tool_calls_info = []
+            for tool_call in response.tool_calls:
+                tool_name = tool_call["name"]
+                tool_args = tool_call["args"]
+                tool_id = tool_call["id"]
+                
+                print(f"NexusAI Tool Calling: Agent requested tool '{tool_name}' with args {tool_args}")
+                tool_fn = next((t for t in self.tools if t.name == tool_name), None)
+                tool_calls_info.append((tool_name, tool_args, tool_id))
+                
+                if not tool_fn:
+                    async def dummy_err(name=tool_name):
+                        return f"Error: Tool '{name}' not found."
+                    tasks.append(dummy_err())
+                else:
+                    async def run_tool_safe(t_fn, t_args):
+                        try:
+                            return await t_fn.ainvoke(t_args, config=config)
+                        except Exception as tool_err:
+                            return f"Error executing tool: {str(tool_err)}"
+                    tasks.append(run_tool_safe(tool_fn, tool_args))
+            
+            import asyncio
+            outputs = await asyncio.gather(*tasks)
+            
+            for (tool_name, tool_args, tool_id), tool_output in zip(tool_calls_info, outputs):
+                messages.append(ToolMessage(content=str(tool_output), tool_call_id=tool_id))
+                tool_results.append({
+                    "content": f"Tool: {tool_name}\nInput: {tool_args}\nOutput: {tool_output}",
+                    "metadata": {"source_file": f"tool:{tool_name}"}
+                })
+                
+        return {"answer": "Error: Tool calling loop exceeded maximum iterations.", "sources": []}
