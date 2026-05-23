@@ -284,13 +284,38 @@ const findSourceChunk = (sourceVal, sourcesList = [], toolSourcesList = []) => {
     }
   } else {
     // Local document search
-    // 1. Direct match by filename (from Simple/Compare RAG)
+    let targetFile = sourceVal;
+    let targetPage = null;
+    const commaIdx = sourceVal.indexOf(',');
+    if (commaIdx !== -1) {
+      targetFile = sourceVal.substring(0, commaIdx).trim();
+      const pagePart = sourceVal.substring(commaIdx + 1).trim();
+      const pageMatch = pagePart.match(/(?:Page|Pages):\s*(\d+)/i);
+      if (pageMatch) {
+        targetPage = parseInt(pageMatch[1], 10);
+      }
+    }
+
+    // 1. Direct match by filename and page (from Simple/Compare RAG)
+    if (targetPage !== null) {
+      for (const src of allSources) {
+        if (src.metadata?.source_file === targetFile) {
+          const srcPage = src.metadata?.page;
+          if (srcPage !== undefined && (srcPage === targetPage || srcPage === targetPage - 1 || String(srcPage) === String(targetPage))) {
+            return src.content;
+          }
+        }
+      }
+    }
+
+    // 2. Direct match by filename alone (fallback)
     for (const src of allSources) {
-      if (src.metadata?.source_file === sourceVal) {
+      if (src.metadata?.source_file === targetFile) {
         return src.content;
       }
     }
-    // 2. Parsed match inside knowledge_base_search output
+    
+    // 3. Parsed match inside knowledge_base_search output
     for (const src of allSources) {
       if (src.metadata?.source_file === 'tool:knowledge_base_search') {
         const content = src.content || '';
@@ -300,7 +325,7 @@ const findSourceChunk = (sourceVal, sourcesList = [], toolSourcesList = []) => {
           const outputText = content.substring(idx + outputMarker.length);
           const blocks = outputText.split(/\n+\-\-\-\n+/);
           for (const block of blocks) {
-            if (block.includes(`[Source: ${sourceVal}`)) {
+            if (block.includes(`[Source: ${targetFile}`)) {
               const headerEnd = block.indexOf(']');
               if (headerEnd !== -1) return block.substring(headerEnd + 1).trim();
               return block.trim();
@@ -1177,9 +1202,24 @@ function App() {
           {(status === 'success' || messages.length > 0) && currentSession !== 'default' && (
             <div className="chat-section">
               <div className="chat-messages">
-                {messages.map((msg, index) => (
-                  <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}>
-                    <MarkdownRenderer content={msg.content} sources={msg.sources} toolSources={msg.toolSources} />
+                 {messages.map((msg, index) => {
+                   const messageSources = msg.sources || [];
+                   // Dynamically accumulate all retrieved chunks across the entire session history 
+                   // to allow conversational follow-up citations to resolve successfully
+                   const allSessionSources = messages.reduce((acc, m) => {
+                     if (m.sources) {
+                       for (const src of m.sources) {
+                         if (!acc.some(existing => existing.content === src.content)) {
+                           acc.push(src);
+                         }
+                       }
+                     }
+                     return acc;
+                   }, [...messageSources]);
+
+                   return (
+                     <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}>
+                       <MarkdownRenderer content={msg.content} sources={allSessionSources} toolSources={msg.toolSources} />
                     {/* ── Tool Execution Log (collapsible) ── */}
                     {getToolLogEntries(msg).length > 0 && (
                       <ToolExecutionLog entries={getToolLogEntries(msg)} />
@@ -1203,7 +1243,8 @@ function App() {
                       </div>
                     )}
                   </div>
-                ))}
+                );
+                })}
                 {isQuerying && (
                   <div className="message assistant-message">
                     {activeTool ? (

@@ -393,8 +393,8 @@ class AgentOrchestrator:
                 "Present your comparative findings using structural elements like Markdown tables, comparison lists, or comparison matrices where appropriate. Keep it highly structured and professional.\n"
                 "CRITICAL CITATION RULES:\n"
                 "You MUST ground your response by citing the source of the information inline. "
-                "If a section, paragraph, or list of comparison items is generated from the same source file, you only need to put a single citation `[Source: filename]` (e.g. `[Source: google.md]`) at the end of that paragraph, section, or block. "
-                "Do NOT repeat the citation on every single line or comparison point if they share the same source. Use the exact 'source_file' name provided in the context blocks.\n"
+                "If a section, paragraph, or list of comparison items is generated from the same source file, you only need to put a single citation `[Source: filename, Pages: X, Y]` (e.g. `[Source: google.md]` or `[Source: tsla-20251231-gen.pdf, Pages: 52, 55]`) at the end of that paragraph, section, or list block. "
+                "Do NOT repeat the citation on every single line or comparison point of a list/paragraph if they share the same document. Group multiple pages into a single trailing citation. Use the exact 'source_file' name provided in the context blocks.\n"
                 "Use ONLY the following context to answer. If you cannot answer based on context, explicitly say so.\n\n"
                 "Context:\n{context}"
             )),
@@ -488,10 +488,10 @@ class AgentOrchestrator:
                     "Make it structured, clear, and professional.\n\n"
                     "CRITICAL CITATION RULES:\n"
                     "You MUST ground your response by citing the source of the information inline:\n"
-                    "- For facts retrieved from the local knowledge base (knowledge_base_search), cite using `[Source: filename]` (e.g. `[Source: google.md]`).\n"
+                    "- For facts retrieved from the local knowledge base (knowledge_base_search), cite using `[Source: filename, Pages: X, Y]` (e.g. `[Source: google.md]` or `[Source: tsla-20251231-gen.pdf, Pages: 52, 55]`).\n"
                     "- For facts retrieved from the web search tool (web_search), cite using `[Source: web:query]` (e.g. `[Source: web:CEO of Adobe]`).\n"
-                    "If a paragraph, list of bullet points, or section is generated from the same source, you only need to put a single citation at the end of that paragraph, section, or block. "
-                    "Do NOT repeat the citation on every single line or sentence if they share the same source. Do not mention tool names or internal execution details, only output the synthesized response with the inline citations."
+                    "If a paragraph, list of bullet points, or section is generated from the same source document, you only need to put a single citation at the end of that paragraph, section, or list block, grouping multiple pages if applicable. "
+                    "Do NOT repeat the citation on every single line or sentence of a list/paragraph if they share the same source document. Do not mention tool names or internal execution details, only output the synthesized response with the inline citations."
                 )
                 messages.append(SystemMessage(content=synthesis_prompt))
                 

@@ -17,6 +17,9 @@ def safe_calculator(expression: str) -> str:
     # Allow only digits, basic operators, spaces, parentheses, and selected mathematical names
     clean_expr = expression.strip()
     
+    # Strip common formatting characters that LLMs pass: currency symbols and commas in numbers
+    clean_expr = re.sub(r'[\$,€£¥]', '', clean_expr)
+    
     # Check for unauthorized characters or functions
     if '**' in clean_expr:
         return "Error: Exponentiation operator '**' is not allowed. Please use pow(base, exponent) instead."

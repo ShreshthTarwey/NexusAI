@@ -64,8 +64,8 @@ class QueryProcessor:
                 "Do not hallucinate or use outside knowledge.\n\n"
                 "CRITICAL CITATION RULES:\n"
                 "You MUST ground your response by citing the source of the information inline. "
-                "If a section, paragraph, or list of bullet points is generated from the same source file, you only need to put a single citation `[Source: filename]` (e.g., `[Source: google.md]`) at the end of that paragraph, section, or block. "
-                "Do NOT repeat the citation on every single line, list item, or sentence if they share the same source. Use the exact 'source_file' name provided in the context blocks (never make up or shorten filenames).\n\n"
+                "If a section, paragraph, or list of bullet points is generated from the same source file, you only need to put a single citation `[Source: filename, Pages: X, Y]` (e.g., `[Source: google.md]` or `[Source: tsla-20251231-gen.pdf, Pages: 52, 55]`) at the end of that paragraph, section, or list block. "
+                "Do NOT repeat the citation on every single line, list item, or sentence of a list/paragraph if they share the same document. Group multiple pages into a single trailing citation. Use the exact 'source_file' name provided in the context blocks (never make up or shorten filenames).\n\n"
                 "Context:\n{context}"
             )),
             ("human", "{question}")
@@ -102,12 +102,12 @@ class QueryProcessor:
                     retrievers=[bm25_retriever, faiss_retriever], 
                     weights=[0.4, 0.6]
                 )
-                # Retrieve top chunks dynamically ranked
-                docs = ensemble_retriever.invoke(user_question)
+                # Retrieve top chunks dynamically ranked and strictly sliced to k
+                docs = ensemble_retriever.invoke(user_question)[:k]
             except Exception as e:
                 print(f"BM25 fallback failed: {e}")
                 # Fallback to pure FAISS if BM25 is missing
-                docs = faiss_retriever.invoke(user_question)
+                docs = faiss_retriever.invoke(user_question)[:k]
         return docs
 
     def format_context(self, docs: list) -> str:
