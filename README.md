@@ -350,7 +350,7 @@ This phase upgrades NexusAI from a standard RAG system to a resilient, self-corr
 We restructured the LangGraph state machine into a self-correcting loop. A `document_grader` node evaluates if the retrieved chunks are relevant to the query *before* generating an answer. If irrelevant, it increments a retry counter and routes back to the query rewriter to try a different search phrasing. This loops up to a maximum of 2 retries, significantly reducing hallucinations.
 
 **2. Scope Guardrails (Pillar 2):**
-To prevent the AI from answering general knowledge questions unrelated to the uploaded documents, we introduced an `input_guardrail` node. It classifies the intent and short-circuits execution to a graceful block message ("I can only answer questions related to our uploaded documents.") if the user wanders out of scope.
+To prevent the AI from answering general knowledge questions unrelated to the uploaded documents, we introduced an `input_guardrail` node. It classifies the intent and short-circuits execution to a graceful block message ("I can only answer questions related to our uploaded documents.") if the user wanders out of scope. In Phase 8, the state machine sequence was updated: the query rewriter runs first to resolve the coreference context from history, and then the input guardrail evaluates the contextualized query. If valid, the system proceeds to intent classification and execution.
 
 **3. Rate Limiting (Pillar 3):**
 Integrated `slowapi` to protect backend endpoints from brute-force attacks and abuse. Authentication endpoints are throttled to 10 requests/minute, while querying and uploads are throttled to 30 requests/minute.
@@ -385,11 +385,15 @@ graph TD
     execute_tool_calling_agent --> END
 ```
 
+*Alternatively, view the visual workflow diagram:*
+
+![NexusAI State Machine Workflow](./frontend/src/assets/workflow.png)
+
 **Guardrail Node Snippet:**
 ```python
 def input_guardrail(self, state: AgentState) -> Dict:
     prompt = (
-        "You are a strict security guard... Return True if it is related to documents... False if general knowledge..."
+        "You are a strict security guard... Return True if it is related to documents, math, web searches... False if general knowledge..."
         f"Query: {state['query']}"
     )
     decision = self.guardrail_llm.invoke(prompt)
@@ -502,18 +506,33 @@ const handleUploadClick = async () => {
 **9. Progressive Rewrite Degradation Fix (Pillar 9):**
 The `rewrite_query` node now reads from `state.get("original_query")` rather than `state["query"]` for every retry iteration. This prevents the self-correction loop from re-reformulating an already-reformulated query, which caused increasingly abstract and context-stripped search strings on successive retries.
 
+**10. Active Tool Pulse UX & Glow Core (Pillar 10):**
+We upgraded the pulsing indicator in the frontend UI to ensure it is highly visible during fast executions. A modern, high-contrast double-ring emerald green glowing animation is used. Additionally, we implemented a minimum display duration of `1500ms` using React refs and timeouts to prevent quick concurrent tool executions from flashing too fast to be visible.
+
+**11. Stateful Grounding Citation Popovers (Pillar 11):**
+We refactored the inline markdown parser to replace default browser title tooltips with stateful custom React components (`InlineSourceBadge`). It resolves citation keys (filenames, web query terms, math expressions) to original chunk content (`findSourceChunk`) and displays hoverable glassmorphic popovers detailing exact context groundings.
+
+**12. Parallel Tool Log Aggregation Race Fix (Pillar 12):**
+To aggregate concurrent tool executions without losing logs, we swapped the singular `pendingToolEntry` state with a mapping dictionary (`pendingToolsMap`) to safely aggregate concurrent tool starts and completions in parallel `asyncio.gather` tool calling executions without losing logs.
+
+- **[Pillar 13] Coreference Context Guardrail Routing Fix:** We rearranged the LangGraph edges to run query reformulation (`rewrite_query`) before safety classification (`input_guardrail`). This ensures that follow-up context-dependent queries (e.g. "Give me a brief description") are rewritten using conversation history before the guardrail node classifies them, eliminating false-positive guardrail blocks.
+- **[Pillar 14] Dynamic Tool Execution Log Reconstruction:** We implemented `getToolLogEntries` inside `App.jsx` to dynamically parse message sources on loading chat history from MongoDB, rendering historical tool execution logs identically to active live queries.
+- **[Pillar 15] Router Keyword Override:** We added a deterministic keyword override check in `route_intent` (for terms like "latest", "current", "calculate", "web search") to instantly route search-oriented and time-sensitive queries to the tool-calling agent.
+- **[Pillar 16] Robust Exception Fallback Handling:** We configured `exceptions_to_handle=[Exception]` in all LLM fallback chains to intercept Gemini rate-limit (429) exceptions correctly, triggering zero-delay failover to Groq, and defensively wrapped tool calling executions to handle all-model failures gracefully.
+- **[Pillar 17] Grounded Paragraph Citation Format:** We relaxed prompt constraints in RAG execution nodes to support block-level/paragraph-level citations, eliminating overly brief or truncated model responses.
+
 **Tool Calling Agent Loop Flow:**
 ```
 User Query
     │
     ▼
-rewrite_query  ──► (if history: condense to standalone query)
+rewrite_query    ──► (if history: condense to standalone query)
     │
     ▼
 input_guardrail  ──► (block off-topic queries)
     │
     ▼
-route_intent  ──► classified as 'tool_calling'
+route_intent     ──► classified as 'tool_calling'
     │
     ▼
 execute_tool_calling_agent

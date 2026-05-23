@@ -72,13 +72,24 @@
 - **[Pillar 7] XSS Link Sanitization:** The `parseInlineMarkdown` helper in `App.jsx` now validates each Markdown link URL against an explicit protocol allowlist (`http://`, `https://`, `mailto:`, `tel:`, `file://`, relative paths). Any URL matching `javascript:`, `vbscript:`, `data:`, or any other scheme is rendered as a disabled, strikethrough `<span>` with a blocked tooltip, eliminating AI-generated XSS vectors.
 - **[Pillar 8] Session Race Condition Fix:** Converted `handleUploadClick` in `App.jsx` from a synchronous call to a fully `async/await` function. The hidden file input is only `.click()`-ed after the backend confirms session creation, preventing uploads from targeting a non-existent `session_id`.
 - **[Pillar 9] Progressive Query Rewrite Degradation Fix:** The `rewrite_query` state node now reads `state.get("original_query")` (set once on first entry) rather than the mutable `state["query"]`. This prevents the self-correction retry loop from re-reformulating an already-reformulated query, which previously caused progressive context stripping over successive retries.
+- **[Pillar 10] Active Tool Pulse UX & Glow Core:** Upgraded the pulsing indicator with a modern, high-contrast double-ring emerald glowing animation, and implemented a minimum display duration of `1500ms` using React refs and timeouts to prevent quick concurrent tool executions from flashing too fast to be visible.
+- **[Pillar 11] Stateful Grounding Citation Popovers:** Refactored the inline markdown parser to replace default browser title tooltips with stateful custom React components (`InlineSourceBadge`). It resolves citation keys (filenames, web query terms, math expressions) to original chunk content (`findSourceChunk`) and displays hoverable glassmorphic popovers detailing exact context groundings.
+- **[Pillar 12] Parallel Tool Log Aggregation Race Fix:** Swapped the singular `pendingToolEntry` state with a mapping dictionary (`pendingToolsMap`) to safely aggregate concurrent tool starts and completions in parallel `asyncio.gather` tool calling executions without losing logs.
+- **[Pillar 13] Coreference Context Guardrail Routing Fix:** Rearranged the LangGraph edges to run query reformulation (`rewrite_query`) before safety classification (`input_guardrail`). This ensures that follow-up context-dependent queries (e.g. "Give me a brief description") are rewritten using conversation history before the guardrail node classifies them, eliminating false-positive guardrail blocks.
+- **[Pillar 14] Dynamic Tool Execution Log Reconstruction:** Implemented `getToolLogEntries` inside `App.jsx` to dynamically parse message sources on loading chat history from MongoDB, rendering historical tool execution logs identically to active live queries.
+- **[Pillar 15] Router Keyword Override:** Added a deterministic keyword override check in `route_intent` (for terms like "latest", "current", "calculate", "web search") to instantly route search-oriented and time-sensitive queries to the tool-calling agent.
+- **[Pillar 16] Robust Exception Fallback Handling:** Configured `exceptions_to_handle=[Exception]` in all LLM fallback chains to intercept Gemini rate-limit (429) exceptions correctly, triggering zero-delay failover to Groq, and defensively wrapped tool calling executions to handle all-model failures gracefully.
+- **[Pillar 17] Grounded Paragraph Citation Format:** Relaxed prompt constraints in RAG execution nodes to support block-level/paragraph-level citations, eliminating overly brief or truncated model responses.
 - Created and written `backend/test_prod_tooling.py` with automated test cases covering: embeddings singleton identity, session ID path traversal blocking, XSS link sanitization logic, and `asyncio.gather` parallel execution timing validation.
+- **Phase 8.5 (Completed):** E2E Verification & Bug Fixing.
+- Run full end-to-end manual verification validating: parallel tool calling logs, dynamic log reconstruction from history, rate-limiting failovers, XSS hyperlink blocking, and coreference-routing sequences.
+- Transitioned to next steps.
 
 ## Pending Tasks
 - [x] Transition to Phase 6 (Conversational Memory & Session Management).
 - [x] Transition to Phase 7 (Reliability & Control Layer).
 - [x] Transition to Phase 8 (Robust Tool Calling Layer & System Hardening).
-- [ ] Run full end-to-end manual verification: parallel tool calls, XSS link injection, upload race condition.
+- [x] Run full end-to-end manual verification: parallel tool calls, XSS link injection, upload race condition.
 - [ ] Transition to Phase 9 (Evaluation Layer).
 - [ ] Final Testing and Project Wrap-up.
 

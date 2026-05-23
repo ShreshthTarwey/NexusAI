@@ -40,6 +40,11 @@ class AgentOrchestrator:
     Orchestration layer that manages state and routes user queries using LangGraph.
     Now enhanced with a Reliability & Control Layer (Guardrails & Self-Correction).
     """
+    router_llm: Any
+    guardrail_llm: Any
+    grader_llm: Any
+    generation_llm: Any
+    
     def __init__(self, session_id: str = "default"):
         self.session_id = session_id
         self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, max_retries=1)
@@ -76,9 +81,9 @@ class AgentOrchestrator:
                     fallbacks_grader.append(groq_router_2.with_structured_output(GraderDecision))
                     self.groq_generators.append(groq_generator_2)
                 
-                self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]}).with_fallbacks(fallbacks_router)
-                self.guardrail_llm = self.llm.with_structured_output(GuardrailDecision).with_config({"tags": ["guardrail"]}).with_fallbacks(fallbacks_guardrail)
-                self.grader_llm = self.llm.with_structured_output(GraderDecision).with_config({"tags": ["grader"]}).with_fallbacks(fallbacks_grader)
+                self.router_llm = self.llm.with_structured_output(RouterDecision).with_config({"tags": ["router"]}).with_fallbacks(fallbacks_router, exceptions_to_handle=[Exception])
+                self.guardrail_llm = self.llm.with_structured_output(GuardrailDecision).with_config({"tags": ["guardrail"]}).with_fallbacks(fallbacks_guardrail, exceptions_to_handle=[Exception])
+                self.grader_llm = self.llm.with_structured_output(GraderDecision).with_config({"tags": ["grader"]}).with_fallbacks(fallbacks_grader, exceptions_to_handle=[Exception])
                 
                 self.generation_llm = self.llm
                 print(f"NexusAI Resilience Layer: Groq fallback models ({len(self.groq_generators)}) successfully initialized.")
@@ -96,7 +101,7 @@ class AgentOrchestrator:
             self.generation_llm = self.llm
 
         # Build the graph workflow
-        workflow = StateGraph(AgentState)
+        workflow = StateGraph(AgentState)  # type: ignore
         
         # Define nodes
         workflow.add_node("rewrite_query", self.rewrite_query)
@@ -162,7 +167,9 @@ class AgentOrchestrator:
         """
         history = state.get("chat_history", "")
         original_query = state.get("original_query") or state.get("query", "")
-        
+        if not isinstance(history, str):
+            history = ""
+            
         if not history.strip():
             return {"query": original_query, "original_query": original_query}
             
@@ -206,15 +213,23 @@ class AgentOrchestrator:
         Scope Guardrail: Prevents general knowledge questions and forces RAG scope.
         """
         prompt = (
-            "You are a strict security guard for a document AI platform. "
-            "Your job is to determine if the user query is asking a general knowledge question OR if it is asking about uploaded documents/interview prep. "
-            "Return True if it is related to documents/interview prep. Return False if it is general knowledge (e.g., 'What is the capital of France?').\n\n"
+            "You are a strict security guard for a document AI and search platform. "
+            "Your job is to determine if the user query is asking a completely unrelated general knowledge question OR if it is requesting information related to: "
+            "1. Uploaded documents or interview preparation.\n"
+            "2. Mathematical calculations, computations, or operations.\n"
+            "3. Web searches, news, current events, or real-time facts.\n\n"
+            "Return True if the query is related to documents, math, web searches, or real-time facts. "
+            "Return False if it is a completely off-topic general knowledge question (e.g., 'What is the capital of France?', 'Write a poem about cats').\n\n"
             f"Query: {state['query']}"
         )
         try:
-            decision = self.guardrail_llm.invoke(prompt)
-            if not decision.is_valid:
-                return {"route": "guardrail_block"}
+              decision = self.guardrail_llm.invoke(prompt)
+              if isinstance(decision, GuardrailDecision):
+                  if not decision.is_valid:
+                      return {"route": "guardrail_block"}
+              elif isinstance(decision, dict):
+                  if not decision.get("is_valid", True):
+                      return {"route": "guardrail_block"}
         except Exception as e:
             print(f"Guardrail failed: {e}")
         return {}
@@ -231,17 +246,36 @@ class AgentOrchestrator:
             
     def route_intent(self, state: AgentState) -> Dict:
         """ Analyzes query intent and decides which execution path to take. """
+        query_lower = state["query"].lower()
+        
+        # Heuristic override for time-sensitive, web search, or math/calculation tasks
+        heuristics = [
+            "latest", "current", "today", "recent", "updated", "web search", 
+            "search the web", "live facts", "real-time", "calculate", "math", 
+            "calculator", "sqrt", "pow", "ceo"
+        ]
+        if any(kw in query_lower for kw in heuristics):
+            print(f"NexusAI Router (Heuristic Override): Detected time/web/math keyword in query. Routing to 'tool_calling'.")
+            return {"route": "tool_calling"}
+
         prompt = (
             f"You are a professional routing classifier for an AI research platform.\n"
             f"Given the user query below, classify its intent into one of the following:\n"
             f"- 'simple_rag': if the query is asking about a single document, simple fact retrieval, or single-source information from uploaded documents.\n"
             f"- 'compare_rag': if the query involves comparing/contrasting multiple documents, cross-referencing files, or synthesizing a summary/comparison matrix across files.\n"
-            f"- 'tool_calling': if the query explicitly requests web search, math calculations, real-time/current facts, or external information not present in the uploaded documents.\n\n"
+            f"- 'tool_calling': if the query explicitly requests web search, math calculations, real-time/current facts, or external information not present in the uploaded documents. "
+            f"If the query is a hybrid request (e.g. asking about local documents AND also requiring math or web searches), you MUST classify it as 'tool_calling' so the agent can run tools concurrently.\n\n"
             f"User Query: {state['query']}"
         )
         try:
             decision = self.router_llm.invoke(prompt)
-            route = decision.route if decision.route in ["simple_rag", "compare_rag", "tool_calling"] else "simple_rag"
+            if isinstance(decision, RouterDecision):
+                route = decision.route if decision.route in ["simple_rag", "compare_rag", "tool_calling"] else "simple_rag"
+            elif isinstance(decision, dict):
+                val = decision.get("route", "simple_rag")
+                route = val if val in ["simple_rag", "compare_rag", "tool_calling"] else "simple_rag"
+            else:
+                route = "simple_rag"
         except Exception as e:
             print(f"Routing classification failed: {e}. Defaulting to simple_rag.")
             route = "simple_rag"
@@ -279,7 +313,14 @@ class AgentOrchestrator:
         
         try:
             decision = self.grader_llm.invoke(prompt)
-            if not decision.is_relevant:
+            if isinstance(decision, GraderDecision):
+                is_relevant = decision.is_relevant
+            elif isinstance(decision, dict):
+                is_relevant = decision.get("is_relevant", True)
+            else:
+                is_relevant = True
+                
+            if not is_relevant:
                 if retries < 2:
                     print(f"NexusAI Self-Correction: Documents irrelevant. Retrying... ({retries+1}/2)")
                     return {"grader_retry": True, "retries": retries + 1, "is_relevant": False}
@@ -350,7 +391,10 @@ class AgentOrchestrator:
                 "You are an expert research comparison agent for the NexusAI platform.\n"
                 "Your task is to compare and contrast the information retrieved from multiple documents.\n"
                 "Present your comparative findings using structural elements like Markdown tables, comparison lists, or comparison matrices where appropriate. Keep it highly structured and professional.\n"
-                "Always cite the 'source_file' name for every row or comparison point in your comparison layout.\n"
+                "CRITICAL CITATION RULES:\n"
+                "You MUST ground your response by citing the source of the information inline. "
+                "If a section, paragraph, or list of comparison items is generated from the same source file, you only need to put a single citation `[Source: filename]` (e.g. `[Source: google.md]`) at the end of that paragraph, section, or block. "
+                "Do NOT repeat the citation on every single line or comparison point if they share the same source. Use the exact 'source_file' name provided in the context blocks.\n"
                 "Use ONLY the following context to answer. If you cannot answer based on context, explicitly say so.\n\n"
                 "Context:\n{context}"
             )),
@@ -385,16 +429,16 @@ class AgentOrchestrator:
         sources = [{"content": doc.page_content, "metadata": doc.metadata} for doc in docs]
         return {"answer": full_content, "sources": sources}
 
-    async def execute_tool_calling_agent(self, state: AgentState, config: RunnableConfig = None) -> Dict:
+    async def execute_tool_calling_agent(self, state: AgentState, config: RunnableConfig | None = None) -> Dict:
         """
         Executes a tool calling agent loop using Gemini and bound tools.
         """
-        from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+        from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
         
         query = state["query"]
         history = state.get("chat_history", "")
         
-        messages = []
+        messages: List[BaseMessage] = []
         
         system_instructions = (
             "You are a helpful assistant equipped with specialized tools to answer user questions.\n"
@@ -424,22 +468,30 @@ class AgentOrchestrator:
                 fallback_tool_callers.append(groq_gen.bind_tools(self.tools))
                 
         if fallback_tool_callers:
-            llm_with_tools = gemini_with_tools.with_fallbacks(fallback_tool_callers)
+            llm_with_tools = gemini_with_tools.with_fallbacks(fallback_tool_callers, exceptions_to_handle=[Exception])
         else:
             llm_with_tools = gemini_with_tools
         
         tool_results = []
         for step in range(5):
-            response = await llm_with_tools.ainvoke(messages, config=config)
+            try:
+                response = await llm_with_tools.ainvoke(messages, config=config)
+            except Exception as invoke_err:
+                print(f"Tool-calling agent LLM invocation failed: {invoke_err}")
+                return {"answer": f"The agent failed to generate a response because all LLM tool-calling models failed: {invoke_err}", "sources": tool_results}
             messages.append(response)
             
             if not response.tool_calls:
                 messages.pop()
                 synthesis_prompt = (
                     "Now, synthesize the final response for the user using the tool results. "
-                    "Make it structured, clear, and professional. "
-                    "Do not mention the tools or the technical details of the execution unless directly asked. "
-                    "Only output the final response."
+                    "Make it structured, clear, and professional.\n\n"
+                    "CRITICAL CITATION RULES:\n"
+                    "You MUST ground your response by citing the source of the information inline:\n"
+                    "- For facts retrieved from the local knowledge base (knowledge_base_search), cite using `[Source: filename]` (e.g. `[Source: google.md]`).\n"
+                    "- For facts retrieved from the web search tool (web_search), cite using `[Source: web:query]` (e.g. `[Source: web:CEO of Adobe]`).\n"
+                    "If a paragraph, list of bullet points, or section is generated from the same source, you only need to put a single citation at the end of that paragraph, section, or block. "
+                    "Do NOT repeat the citation on every single line or sentence if they share the same source. Do not mention tool names or internal execution details, only output the synthesized response with the inline citations."
                 )
                 messages.append(SystemMessage(content=synthesis_prompt))
                 
@@ -454,8 +506,37 @@ class AgentOrchestrator:
                     async for chunk in self.generation_llm.astream(messages, config=stream_config):
                         full_content += chunk.content
                 except Exception as stream_err:
-                    print(f"Streaming final answer failed: {stream_err}. Falling back to non-stream response.")
-                    full_content = response.content
+                    print(f"Streaming final answer failed: {stream_err}. Attempting fallback generation models...")
+                    fallback_success = False
+                    if hasattr(self, "groq_generators") and self.groq_generators:
+                        for idx, fallback_llm in enumerate(self.groq_generators):
+                            try:
+                                full_content = ""
+                                async for chunk in fallback_llm.astream(messages, config=stream_config):
+                                    full_content += chunk.content
+                                fallback_success = True
+                                print(f"NexusAI Resilience: Fallback streaming model {idx+1} succeeded.")
+                                break
+                            except Exception as fallback_e:
+                                print(f"NexusAI Resilience: Fallback streaming model {idx+1} failed ({fallback_e}).")
+                    
+                    if not fallback_success:
+                        print("All fallback streaming models failed. Falling back to non-stream response.")
+                        if isinstance(response.content, str):
+                            full_content = response.content
+                        elif isinstance(response.content, list):
+                            text_blocks = []
+                            for block in response.content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text_blocks.append(block.get("text", ""))
+                                elif isinstance(block, str):
+                                    text_blocks.append(block)
+                            full_content = "".join(text_blocks)
+                        else:
+                            full_content = str(response.content)
+                        
+                        if not full_content or not full_content.strip():
+                            full_content = "The service encountered a rate-limit (429) error while synthesizing the final response. Please check your API key quota."
                 
                 return {"answer": full_content, "sources": tool_results}
                 
@@ -487,7 +568,7 @@ class AgentOrchestrator:
             outputs = await asyncio.gather(*tasks)
             
             for (tool_name, tool_args, tool_id), tool_output in zip(tool_calls_info, outputs):
-                messages.append(ToolMessage(content=str(tool_output), tool_call_id=tool_id))
+                messages.append(ToolMessage(content=tool_output, tool_call_id=tool_id))
                 tool_results.append({
                     "content": f"Tool: {tool_name}\nInput: {tool_args}\nOutput: {tool_output}",
                     "metadata": {"source_file": f"tool:{tool_name}"}

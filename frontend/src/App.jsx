@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import './index.css';
 
 // Robust stateful Markdown parser for block elements (headers, lists with nested indents, tables, code blocks, blockquotes, and paragraphs)
-const MarkdownRenderer = ({ content }) => {
+const MarkdownRenderer = ({ content, sources, toolSources }) => {
   if (!content) return null;
 
   const lines = content.split('\n');
@@ -25,7 +25,7 @@ const MarkdownRenderer = ({ content }) => {
           {currentBlock.lines.map((line, lIdx) => (
             <span key={lIdx}>
               {lIdx > 0 && <br />}
-              {parseInlineMarkdown(line)}
+              {parseInlineMarkdown(line, sources, toolSources)}
             </span>
           ))}
         </p>
@@ -34,7 +34,7 @@ const MarkdownRenderer = ({ content }) => {
       elements.push(
         <blockquote key={key} className="markdown-blockquote">
           {currentBlock.lines.map((line, lIdx) => (
-            <div key={lIdx}>{parseInlineMarkdown(line)}</div>
+            <div key={lIdx}>{parseInlineMarkdown(line, sources, toolSources)}</div>
           ))}
         </blockquote>
       );
@@ -62,7 +62,7 @@ const MarkdownRenderer = ({ content }) => {
                   listStyleType: level === 0 ? 'disc' : level === 1 ? 'circle' : 'square'
                 }}
               >
-                {parseInlineMarkdown(item.text)}
+                {parseInlineMarkdown(item.text, sources, toolSources)}
               </li>
             );
           })}
@@ -95,7 +95,7 @@ const MarkdownRenderer = ({ content }) => {
               <thead>
                 <tr>
                   {headerCells.map((cell, idx) => (
-                    <th key={idx}>{parseInlineMarkdown(cell)}</th>
+                    <th key={idx}>{parseInlineMarkdown(cell, sources, toolSources)}</th>
                   ))}
                 </tr>
               </thead>
@@ -103,7 +103,7 @@ const MarkdownRenderer = ({ content }) => {
                 {bodyRows.map((row, rIdx) => (
                   <tr key={rIdx}>
                     {row.map((cell, cIdx) => (
-                      <td key={cIdx}>{parseInlineMarkdown(cell)}</td>
+                      <td key={cIdx}>{parseInlineMarkdown(cell, sources, toolSources)}</td>
                     ))}
                   </tr>
                 ))}
@@ -161,7 +161,7 @@ const MarkdownRenderer = ({ content }) => {
         const Tag = `h${level}`;
         elements.push(
           <Tag key={`h-${i}`} className={`markdown-h${level}`}>
-            {parseInlineMarkdown(text)}
+            {parseInlineMarkdown(text, sources, toolSources)}
           </Tag>
         );
         continue;
@@ -233,10 +233,134 @@ const MarkdownRenderer = ({ content }) => {
   return <div className="markdown-body">{elements}</div>;
 };
 
-// Helper to parse inline markdown (bold, code, links)
-const parseInlineMarkdown = (text) => {
+// Helper to find the actual content chunk associated with a citation value
+const findSourceChunk = (sourceVal, sourcesList = [], toolSourcesList = []) => {
+  const allSources = [...(sourcesList || []), ...(toolSourcesList || [])];
+  const isWeb = sourceVal.startsWith('web:');
+  const isCalc = sourceVal.startsWith('calc:') || sourceVal.startsWith('math:');
+
+  if (isWeb) {
+    const queryTerm = sourceVal.slice(4).trim();
+    // 1. Exact match on query parameter in web_search input
+    for (const src of allSources) {
+      if (src.metadata?.source_file === 'tool:web_search') {
+        const content = src.content || '';
+        if (content.toLowerCase().includes(queryTerm.toLowerCase())) {
+          const outputMarker = 'Output:';
+          const idx = content.indexOf(outputMarker);
+          if (idx !== -1) return content.substring(idx + outputMarker.length).trim();
+          return content;
+        }
+      }
+    }
+    // 2. Fallback: match any web search content if queryTerm not explicitly in content
+    for (const src of allSources) {
+      if (src.metadata?.source_file === 'tool:web_search') {
+        const content = src.content || '';
+        const outputMarker = 'Output:';
+        const idx = content.indexOf(outputMarker);
+        if (idx !== -1) return content.substring(idx + outputMarker.length).trim();
+        return content;
+      }
+    }
+  } else if (isCalc) {
+    const exprTerm = sourceVal.split(':')[1]?.trim() || '';
+    for (const src of allSources) {
+      if (src.metadata?.source_file === 'tool:safe_calculator') {
+        const content = src.content || '';
+        if (!exprTerm || content.toLowerCase().includes(exprTerm.toLowerCase())) {
+          const outputMarker = 'Output:';
+          const idx = content.indexOf(outputMarker);
+          if (idx !== -1) return `${exprTerm} = ${content.substring(idx + outputMarker.length).trim()}`;
+          return content;
+        }
+      }
+    }
+    // Fallback: return first calculator tool output
+    for (const src of allSources) {
+      if (src.metadata?.source_file === 'tool:safe_calculator') {
+        return src.content || '';
+      }
+    }
+  } else {
+    // Local document search
+    // 1. Direct match by filename (from Simple/Compare RAG)
+    for (const src of allSources) {
+      if (src.metadata?.source_file === sourceVal) {
+        return src.content;
+      }
+    }
+    // 2. Parsed match inside knowledge_base_search output
+    for (const src of allSources) {
+      if (src.metadata?.source_file === 'tool:knowledge_base_search') {
+        const content = src.content || '';
+        const outputMarker = 'Output:';
+        const idx = content.indexOf(outputMarker);
+        if (idx !== -1) {
+          const outputText = content.substring(idx + outputMarker.length);
+          const blocks = outputText.split(/\n+\-\-\-\n+/);
+          for (const block of blocks) {
+            if (block.includes(`[Source: ${sourceVal}`)) {
+              const headerEnd = block.indexOf(']');
+              if (headerEnd !== -1) return block.substring(headerEnd + 1).trim();
+              return block.trim();
+            }
+          }
+        }
+      }
+    }
+  }
+  return null;
+};
+
+// Interactive source badge showing custom hover popup card
+const InlineSourceBadge = ({ sourceVal, sources, toolSources }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const isWeb = sourceVal.startsWith('web:');
+  const isCalc = sourceVal.startsWith('calc:') || sourceVal.startsWith('math:');
+  
+  const displayLabel = isWeb 
+    ? `🌐 ${sourceVal.slice(4)}` 
+    : isCalc 
+    ? `🧮 ${sourceVal.split(':')[1] || sourceVal}` 
+    : `📄 ${sourceVal}`;
+    
+  const chunkContent = findSourceChunk(sourceVal, sources, toolSources);
+
+  return (
+    <span 
+      className="inline-source-badge-container"
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+    >
+      <span className="inline-source-badge">
+        {displayLabel}
+      </span>
+      {showTooltip && (
+        <span className="source-popover">
+          <span className="popover-header">
+            <span className="popover-icon">{isWeb ? '🌐' : isCalc ? '🧮' : '📄'}</span>
+            <span className="popover-title">
+              {isWeb ? 'Web Search Grounding' : isCalc ? 'Calculated Result' : 'Document Grounding'}
+            </span>
+          </span>
+          <span className="popover-meta">
+            {isWeb ? `Query: "${sourceVal.slice(4)}"` : isCalc ? `Expression: ${sourceVal.split(':')[1] || ''}` : `File: ${sourceVal}`}
+          </span>
+          <span className="popover-body">
+            {chunkContent ? chunkContent : "No matching grounding chunk found in session sources."}
+          </span>
+          <span className="popover-arrow"></span>
+        </span>
+      )}
+    </span>
+  );
+};
+
+// Helper to parse inline markdown (bold, code, links, and source citations)
+const parseInlineMarkdown = (text, sources, toolSources) => {
   if (!text) return '';
-  const regex = /(\*\*.*?\*\*|`.*?`|\[.*?\]\(.*?\))/g;
+  const regex = /(\*\*.*?\*\*|`.*?`|\[.*?\]\(.*?\)|\[Source:\s*.*?\])/g;
   const parts = text.split(regex);
 
   return parts.map((part, index) => {
@@ -245,6 +369,17 @@ const parseInlineMarkdown = (text) => {
     }
     if (part.startsWith('`') && part.endsWith('`')) {
       return <code key={index} className="inline-code">{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith('[Source:') && part.endsWith(']')) {
+      const sourceVal = part.slice(8, -1).trim();
+      return (
+        <InlineSourceBadge 
+          key={index} 
+          sourceVal={sourceVal} 
+          sources={sources} 
+          toolSources={toolSources} 
+        />
+      );
     }
     if (part.startsWith('[') && part.includes('](') && part.endsWith(')')) {
       const match = part.match(/^\[(.*?)\]\((.*?)\)$/);
@@ -277,6 +412,45 @@ const parseInlineMarkdown = (text) => {
   });
 };
 
+// Helper to reconstruct tool execution logs from sources for database-loaded history messages
+const getToolLogEntries = (msg) => {
+  if (msg.toolLog && msg.toolLog.length > 0) {
+    return msg.toolLog;
+  }
+  if (!msg.sources) return [];
+  
+  const entries = [];
+  for (const src of msg.sources) {
+    const filename = src.metadata?.source_file || '';
+    if (filename.startsWith('tool:')) {
+      const toolName = filename.substring(5);
+      const content = src.content || '';
+      
+      let inputVal = '';
+      let outputVal = '';
+      const inputMarker = 'Input:';
+      const outputMarker = 'Output:';
+      
+      const inputIdx = content.indexOf(inputMarker);
+      const outputIdx = content.indexOf(outputMarker);
+      
+      if (inputIdx !== -1 && outputIdx !== -1) {
+        inputVal = content.substring(inputIdx + inputMarker.length, outputIdx).trim();
+        outputVal = content.substring(outputIdx + outputMarker.length).trim();
+      } else {
+        inputVal = content;
+      }
+      
+      entries.push({
+        name: toolName,
+        input: inputVal,
+        output: outputVal
+      });
+    }
+  }
+  return entries;
+};
+
 // Collapsible Tool Execution Log — shown inside each assistant message that used tools
 const ToolExecutionLog = ({ entries }) => {
   const [open, setOpen] = useState(false);
@@ -284,6 +458,7 @@ const ToolExecutionLog = ({ entries }) => {
   const toolIcons = {
     web_search: '🌐',
     safe_calculator: '🧮',
+    knowledge_base_search: '🔍',
   };
 
   return (
@@ -325,6 +500,16 @@ const ToolExecutionLog = ({ entries }) => {
   );
 };
 
+const formatToolInput = (inputStr) => {
+  if (!inputStr) return '';
+  // Match single or double quoted values for keys like 'query' or 'expression' in stringified python dicts
+  const match = inputStr.match(/'(?:query|expression)':\s*['"](.*?)['"]/);
+  if (match) {
+    return match[1];
+  }
+  return inputStr;
+};
+
 function App() {
   const [token, setToken] = useState(localStorage.getItem('nexusai_token') || null);
   const [currentUser, setCurrentUser] = useState(localStorage.getItem('nexusai_username') || null);
@@ -351,6 +536,8 @@ function App() {
   const [activeTool, setActiveTool] = useState(null); // { name, input } | null
   const [toolLog, setToolLog] = useState([]); // [{ name, input, output }] for current streaming msg
   const messagesEndRef = useRef(null);
+  const activeToolStartTimeRef = useRef(0);
+  const activeToolTimeoutRef = useRef(null);
 
   // Authenticated custom fetch wrapper
   const apiFetch = async (path, options = {}) => {
@@ -584,7 +771,7 @@ function App() {
       let buffer = '';
       // Local log accumulated during stream (to set on message at end)
       let currentToolLog = [];
-      let pendingToolEntry = null;
+      let pendingToolsMap = {};
 
       while (!done) {
         const { value, done: readerDone } = await reader.read();
@@ -603,6 +790,18 @@ function App() {
 
                 // ── Text token ──────────────────────────────────────────────
                 if (data.text) {
+                  const elapsed = Date.now() - activeToolStartTimeRef.current;
+                  const minDuration = 1500;
+                  if (elapsed < minDuration) {
+                    if (!activeToolTimeoutRef.current) {
+                      activeToolTimeoutRef.current = setTimeout(() => {
+                        setActiveTool(null);
+                        activeToolTimeoutRef.current = null;
+                      }, minDuration - elapsed);
+                    }
+                  } else {
+                    setActiveTool(null);
+                  }
                   setMessages(prev => {
                     const newMessages = [...prev];
                     const lastMsgIndex = newMessages.length - 1;
@@ -642,19 +841,24 @@ function App() {
 
                 // ── Tool status: started ──────────────────────────────────────
                 if (data.tool_status === 'start') {
-                  pendingToolEntry = { name: data.tool_name, input: data.tool_input, output: null };
+                  if (activeToolTimeoutRef.current) {
+                    clearTimeout(activeToolTimeoutRef.current);
+                    activeToolTimeoutRef.current = null;
+                  }
+                  activeToolStartTimeRef.current = Date.now();
+                  pendingToolsMap[data.tool_name] = { name: data.tool_name, input: data.tool_input, output: null };
                   setActiveTool({ name: data.tool_name, input: data.tool_input });
                 }
 
                 // ── Tool status: completed ────────────────────────────────────
                 if (data.tool_status === 'end') {
-                  if (pendingToolEntry) {
-                    pendingToolEntry.output = data.tool_output;
-                    currentToolLog = [...currentToolLog, pendingToolEntry];
+                  const entry = pendingToolsMap[data.tool_name];
+                  if (entry) {
+                    entry.output = data.tool_output;
+                    currentToolLog = [...currentToolLog, entry];
                     setToolLog([...currentToolLog]);
-                    pendingToolEntry = null;
+                    delete pendingToolsMap[data.tool_name];
                   }
-                  setActiveTool(null);
                 }
 
               } catch (e) {
@@ -688,6 +892,10 @@ function App() {
       }]);
     } finally {
       setIsQuerying(false);
+      if (activeToolTimeoutRef.current) {
+        clearTimeout(activeToolTimeoutRef.current);
+        activeToolTimeoutRef.current = null;
+      }
       setActiveTool(null);
       setToolLog([]);
     }
@@ -971,10 +1179,10 @@ function App() {
               <div className="chat-messages">
                 {messages.map((msg, index) => (
                   <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}>
-                    <MarkdownRenderer content={msg.content} />
+                    <MarkdownRenderer content={msg.content} sources={msg.sources} toolSources={msg.toolSources} />
                     {/* ── Tool Execution Log (collapsible) ── */}
-                    {msg.toolLog && msg.toolLog.length > 0 && (
-                      <ToolExecutionLog entries={msg.toolLog} />
+                    {getToolLogEntries(msg).length > 0 && (
+                      <ToolExecutionLog entries={getToolLogEntries(msg)} />
                     )}
                     {/* ── Document Sources ── */}
                     {msg.sources && msg.sources.filter(s => !s.metadata?.source_file?.startsWith('tool:')).length > 0 && (
@@ -1001,12 +1209,14 @@ function App() {
                     {activeTool ? (
                       <div className="tool-status-badge">
                         <span className="tool-status-icon">
-                          {activeTool.name === 'web_search' ? '🌐' : '🧮'}
+                          {activeTool.name === 'web_search' ? '🌐' : activeTool.name === 'knowledge_base_search' ? '🔍' : '🧮'}
                         </span>
                         <span className="tool-status-text">
                           {activeTool.name === 'web_search'
-                            ? `Searching the web for: "${activeTool.input}"`
-                            : `Calculating: ${activeTool.input}`}
+                            ? `Searching the web for "${formatToolInput(activeTool.input)}"`
+                            : activeTool.name === 'knowledge_base_search'
+                            ? `Searching local documents for "${formatToolInput(activeTool.input)}"`
+                            : `Calculating "${formatToolInput(activeTool.input)}"`}
                         </span>
                         <span className="tool-status-pulse"></span>
                       </div>

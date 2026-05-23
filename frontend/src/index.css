@@ -865,17 +865,37 @@ h1 {
 
 /* Animated pulsing dot */
 .tool-status-pulse {
-  width: 8px;
-  height: 8px;
+  position: relative;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: #3b82f6;
+  background: #10b981; /* bright emerald core */
   flex-shrink: 0;
-  animation: toolPulse 1.2s ease-in-out infinite;
+  box-shadow: 0 0 8px #10b981;
 }
 
-@keyframes toolPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.35; transform: scale(0.65); }
+.tool-status-pulse::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  border-radius: 50%;
+  border: 2px solid #10b981;
+  opacity: 0;
+  animation: toolRingPulse 1.5s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
+
+@keyframes toolRingPulse {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
 }
 
 /* =====================================================
@@ -1005,5 +1025,124 @@ h1 {
   color: #86efac;
   max-height: 160px;
   overflow-y: auto;
+}
+
+/* =====================================================
+   INLINE GROUNDING SOURCE CITATION BADGE WITH POPOVER
+   ===================================================== */
+.inline-source-badge-container {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.inline-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  margin-left: 0.3rem;
+  margin-right: 0.3rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.inline-source-badge:hover {
+  background: rgba(99, 102, 241, 0.28);
+  border-color: rgba(99, 102, 241, 0.6);
+  transform: translateY(-1px);
+  color: #ffffff;
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3);
+}
+
+.source-popover {
+  position: absolute;
+  bottom: 130%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 340px;
+  max-height: 260px;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  border-radius: 0.6rem;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(12px);
+  padding: 0.75rem;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  animation: popoverFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes popoverFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+.popover-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  color: #a5b4fc;
+  font-size: 0.8rem;
+}
+
+.popover-meta {
+  font-size: 0.7rem;
+  color: #64748b;
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popover-body {
+  font-size: 0.75rem;
+  color: #e2e8f0;
+  line-height: 1.4;
+  overflow-y: auto;
+  max-height: 160px;
+  text-align: left;
+  white-space: pre-wrap;
+  background: rgba(30, 41, 59, 0.5);
+  padding: 0.5rem;
+  border-radius: 0.3rem;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.popover-body::-webkit-scrollbar {
+  width: 4px;
+}
+.popover-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.popover-body::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+}
+
+.popover-arrow {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 6px;
+  border-style: solid;
+  border-color: rgba(15, 23, 42, 0.96) transparent transparent transparent;
 }
 

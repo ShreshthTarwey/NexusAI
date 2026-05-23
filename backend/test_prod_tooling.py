@@ -17,7 +17,7 @@ from services.tools import safe_calculator, web_search
 from main import validate_session_id
 from fastapi import HTTPException
 
-class TestSystemHardeningAndTooling(unittest.IsolatedAsyncTestCase):
+class TestSystemHardeningAndTooling(unittest.IsolatedAsyncioTestCase):
 
     def test_embeddings_singleton(self):
         """
