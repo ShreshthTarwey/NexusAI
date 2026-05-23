@@ -495,3 +495,54 @@ async def query_document(request: Request, query_request: QueryRequest, current_
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     except Exception as e:
         return {"error": str(e)}
+
+@app.post("/api/eval/run")
+async def run_rag_evaluation(request: Request, current_user: dict = Depends(get_current_user)):
+    """
+    Exposes an administrative endpoint to trigger the RAGAS evaluation suite
+    and return the latest scores.
+    """
+    import sys
+    import os
+    import re
+    
+    python_executable = sys.executable
+    script_path = os.path.join("backend", "eval", "run_eval.py")
+    if not os.path.exists(script_path):
+        script_path = os.path.join("eval", "run_eval.py")
+        
+    if not os.path.exists(script_path):
+        raise HTTPException(status_code=404, detail="RAGAS evaluation script not found.")
+        
+    try:
+        # Launch run_eval.py asynchronously to avoid blocking the FastAPI thread
+        process = await asyncio.create_subprocess_exec(
+            python_executable, script_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        stdout_str = stdout.decode("utf-8", errors="ignore")
+        stderr_str = stderr.decode("utf-8", errors="ignore")
+        
+        # Parse the printed scores from stdout using regex
+        faithfulness_match = re.search(r"📊 FAITHFULNESS\s*:\s*([\d\.]+)%", stdout_str)
+        relevance_match = re.search(r"📊 ANSWER_RELEVANCE\s*:\s*([\d\.]+)%", stdout_str)
+        recall_match = re.search(r"📊 CONTEXT_RECALL\s*:\s*([\d\.]+)%", stdout_str)
+        
+        scores = {
+            "faithfulness": float(faithfulness_match.group(1)) / 100.0 if faithfulness_match else None,
+            "answer_relevance": float(relevance_match.group(1)) / 100.0 if relevance_match else None,
+            "context_recall": float(recall_match.group(1)) / 100.0 if recall_match else None,
+        }
+        
+        return {
+            "status": "success",
+            "scores": scores,
+            "stdout": stdout_str[-5000:] if len(stdout_str) > 5000 else stdout_str,
+            "stderr": stderr_str
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run RAGAS evaluation: {str(e)}")
+

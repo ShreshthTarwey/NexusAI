@@ -1,0 +1,82 @@
+[
+  {
+    "question": "What is the total automotive sales revenue for Tesla in 2025 and 2024, and what is the percentage change?",
+    "ground_truth": "In 2025, Tesla's automotive sales revenue was $65,821 million, and in 2024 it was $72,480 million. The percentage change is a decrease of approximately 9.19% (calculation: ((65821 - 72480) / 72480) * 100).",
+    "contexts": [
+      "Automotive sales: $65,821 million (2025), $72,480 million (2024), $78,509 million (2023)"
+    ]
+  },
+  {
+    "question": "What are the total revenues and net income of Tesla in 2025, 2024, and 2023?",
+    "ground_truth": "Total revenues: $94,827 million (2025), $97,690 million (2024), $96,773 million (2023). Net income: $3,855 million (2025), $7,153 million (2024), $14,974 million (2023).",
+    "contexts": [
+      "Total revenues: $94,827 million (2025), $97,690 million (2024), $96,773 million (2023)\nNet income: $3,855 million (2025), $7,153 million (2024), $14,974 million (2023)"
+    ]
+  },
+  {
+    "question": "Compare the year-over-year growth percentage of Tesla's Energy generation and storage segment to the Services and other segment between 2024 and 2025.",
+    "ground_truth": "Energy generation and storage revenue grew from $10,086 million in 2024 to $12,771 million in 2025, representing a growth of 26.62%. Services and other revenue grew from $10,534 million in 2024 to $12,530 million in 2025, representing a growth of 18.95%. Energy generation and storage grew faster by approximately 7.67 percentage points.",
+    "contexts": [
+      "Energy generation and storage: $12,771 million (2025), $10,086 million (2024), $6,035 million (2023)\nServices and other: $12,530 million (2025), $10,534 million (2024), $8,319 million (2023)"
+    ]
+  },
+  {
+    "question": "What is the difference between current latest Google SDE interview and the interview process mentioned in our local Google guide document?",
+    "ground_truth": "The Google guide document outlines an older process: Recruiter screen, 1-2 phone interviews conducting 45-min coding on Google Docs without an IDE, and a 5-round onsite loop (4 coding + 1 G&L). The current latest Google SDE process has shifted toward virtual onsite interviews, placed more emphasis on system design for senior roles, and uses integrated online coding platforms instead of blank Google Docs.",
+    "contexts": [
+      "Recruiter Screen: resume review and initial fit assessment\nPhone Interview 1: 45-min coding on Google Docs (no IDE)\nOn-site Loop: 5 rounds — 4 coding + 1 Googleyness & Leadership (G&L)"
+    ]
+  },
+  {
+    "question": "Find who is the current CEO of Adobe on the web, calculate their age squared, and search our local documents to see if our Google interview guide mentions coding rounds.",
+    "ground_truth": "The current CEO of Adobe is Shantanu Narayen. Born on May 27, 1963, his age in 2026 is 63 years. His age squared is 3,969 (calculation: 63 * 63). Our local Google interview guide explicitly mentions coding rounds, specifically a 45-min coding round on Google Docs during the phone interview, and 4 coding rounds during the 5-round on-site loop.",
+    "contexts": [
+      "Phone Interview 1: 45-min coding on Google Docs (no IDE)\nOn-site Loop: 5 rounds — 4 coding + 1 Googleyness & Leadership"
+    ]
+  },
+  {
+    "question": "What is the capital of France and what is the formula for the volume of a sphere?",
+    "ground_truth": "I can only answer questions related to our uploaded documents.",
+    "contexts": []
+  },
+  {
+    "question": "What are Tesla's total operating expenses in 2025, and what are the main components driving the change from 2024?",
+    "ground_truth": "In 2025, Tesla's total operating expenses were $12,739 million, up from $10,374 million in 2024 (a 22.80% increase). The main components of operating expenses in 2025 were Research and Development ($6,411 million), Selling, General and Administrative ($5,834 million), and Restructuring and other ($494 million).",
+    "contexts": [
+      "Operating expenses: $12,739 million (2025), $10,374 million (2024), $8,769 million (2023)\nResearch and development: $6,411 (2025), $4,540 (2024), $3,969 (2023)\nSelling, general and administrative: $5,834 (2025), $5,150 (2024), $4,800 (2023)\nRestructuring and other: $494 (2025), $684 (2024)"
+    ]
+  },
+  {
+    "question": "What are automotive regulatory credits revenues in 2025, 2024, and 2023?",
+    "ground_truth": "Tesla's automotive regulatory credits revenues were $1,993 million in 2025, $2,763 million in 2024, and $1,790 million in 2023.",
+    "contexts": [
+      "Automotive regulatory credits: $1,993 million (2025), $2,763 million (2024), $1,790 million (2023)"
+    ]
+  },
+  {
+    "question": "Calculate the gross profit margin percentage for Tesla in 2025 based on total revenues and gross profit.",
+    "ground_truth": "In 2025, Tesla's total revenues were $94,827 million, and gross profit was $17,094 million. The gross profit margin percentage is approximately 18.03% (calculation: (17094 / 94827) * 100).",
+    "contexts": [
+      "Total revenues: $94,827 million (2025)\nGross profit: $17,094 million (2025)"
+    ]
+  },
+  {
+    "question": "Write a python script to web scrape Tesla stock prices.",
+    "ground_truth": "I can only answer questions related to our uploaded documents.",
+    "contexts": []
+  },
+  {
+    "question": "Compare Tesla's comprehensive income attributable to common stockholders in 2024 and 2025.",
+    "ground_truth": "Tesla's comprehensive income attributable to common stockholders was $4,825 million in 2025, compared to $6,564 million in 2024, representing a decrease of approximately 26.50% (calculation: ((4825 - 6564) / 6564) * 100).",
+    "contexts": [
+      "Comprehensive Income Attributable to Common Stockholders: $4,825 (2025), $6,564 (2024), $15,215 (2023)"
+    ]
+  },
+  {
+    "question": "Compare automotive leasing revenue to total revenues for the years 2023, 2024, and 2025.",
+    "ground_truth": "Automotive leasing revenue was $1,712 million in 2025 (1.81% of total revenues of $94,827 million), $1,827 million in 2024 (1.87% of total revenues of $97,690 million), and $2,120 million in 2023 (2.19% of total revenues of $96,773 million). Automotive leasing has steadily decreased both in absolute dollars and as a percentage of total revenues.",
+    "contexts": [
+      "Automotive leasing: $1,712 million (2025), $1,827 million (2024), $2,120 million (2023)\nTotal revenues: $94,827 million (2025), $97,690 million (2024), $96,773 million (2023)"
+    ]
+  }
+]
