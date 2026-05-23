@@ -22,3 +22,6 @@ slowapi
 ragas>=0.1.7
 datasets>=2.18.0
 pandas>=2.2.1
+numpy
+aiohttp
+

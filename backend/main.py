@@ -17,11 +17,15 @@ import re
 import asyncio
 from datetime import datetime, timedelta
 
+import logging
+from logging.handlers import RotatingFileHandler
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from services.document_processor import DocumentProcessor
 from services.query_processor import QueryProcessor
 from services.agent_orchestrator import AgentOrchestrator
 from services.auth import hash_password, verify_password, create_access_token, get_current_user
+from services.embeddings_manager import EmbeddingsManager
 
 # Load environment variables
 # Set strict warnings config
@@ -29,6 +33,26 @@ load_dotenv()
 
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="coroutine 'ClientResponse.json' was never awaited")
+
+# Centralized logging configuration
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "nexusai.log")
+
+file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
+file_handler.setFormatter(log_formatter)
+file_handler.setLevel(logging.INFO)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+console_handler.setLevel(logging.INFO)
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, console_handler]
+)
+logger = logging.getLogger("NexusAI")
 
 from contextlib import asynccontextmanager
 
@@ -105,20 +129,23 @@ async def lifespan(app: FastAPI):
         try:
             # Ping the server to verify connection
             await db_client.admin.command('ping')
-            print("==================================================")
-            print("NexusAI: Successfully connected to MongoDB Atlas!")
-            print("==================================================")
+            logger.info("==================================================")
+            logger.info("NexusAI: Successfully connected to MongoDB Atlas!")
+            logger.info("==================================================")
         except Exception as e:
-            print(f"NexusAI: Failed to connect to MongoDB: {e}")
+            logger.error(f"NexusAI: Failed to connect to MongoDB: {e}")
             
     # Launch GC background task
     gc_task = asyncio.create_task(session_garbage_collection_loop(db))
+    # Launch Embeddings auto-unload loop
+    unload_task = asyncio.create_task(EmbeddingsManager.auto_unload_loop())
     yield
-    # Cancel GC task on shutdown
+    # Cancel tasks on shutdown
     gc_task.cancel()
+    unload_task.cancel()
     try:
-        await gc_task
-    except asyncio.CancelledError:
+        await asyncio.gather(gc_task, unload_task, return_exceptions=True)
+    except Exception:
         pass
         
     if db_client is not None:
@@ -143,10 +170,14 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.state.db = db
 
-# Enable CORS strictly for the React frontend
+# Retrieve CORS origins from env (default to local frontend)
+cors_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
+cors_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
+
+# Enable CORS strictly for authorized frontends
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Locked down for production security
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
