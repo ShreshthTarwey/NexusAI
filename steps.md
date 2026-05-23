@@ -1,7 +1,7 @@
 # Engineering Log & Progress Tracker
 
 ## Current Project State
-- **Phase 8: Robust Tool Calling Layer & System Hardening** is completed.
+- **Phase 9: Evaluation Layer** is completed.
 - **Phases 1–7** (Foundation → RAG → Hybrid RAG → Observability → Agentic Routing → Conversational Memory → Auth → Reliability) are all completed.
 - The fundamental directory structure (`backend/` and `frontend/`) has been initialized.
 - `README.md` and `steps.md` are actively maintained.
@@ -80,26 +80,36 @@
 - **[Pillar 15] Router Keyword Override:** Added a deterministic keyword override check in `route_intent` (for terms like "latest", "current", "calculate", "web search") to instantly route search-oriented and time-sensitive queries to the tool-calling agent.
 - **[Pillar 16] Robust Exception Fallback Handling:** Configured `exceptions_to_handle=[Exception]` in all LLM fallback chains to intercept Gemini rate-limit (429) exceptions correctly, triggering zero-delay failover to Groq, and defensively wrapped tool calling executions to handle all-model failures gracefully.
 - **[Pillar 17] Grounded Paragraph Citation Format:** Relaxed prompt constraints in RAG execution nodes to support block-level/paragraph-level citations, eliminating overly brief or truncated model responses.
-- Created and written `backend/test_prod_tooling.py` with automated test cases covering: embeddings singleton identity, session ID path traversal blocking, XSS link sanitization logic, and `asyncio.gather` parallel execution timing validation.
-- **Phase 8.5 (Completed):** E2E Verification & Bug Fixing.
-- Run full end-to-end manual verification validating: parallel tool calling logs, dynamic log reconstruction from history, rate-limiting failovers, XSS hyperlink blocking, and coreference-routing sequences.
-- Transitioned to next steps.
+- **Phase 9:** Integrated RAGAS Evaluation Layer.
+  - Coded `backend/eval/run_eval.py` to automate evaluations using the RAGAS framework (`ragas-0.4.3`) to calculate Faithfulness, Answer Relevancy, and Context Recall.
+  - Populated a golden test set in `backend/eval/test_set.json` with 12 high-complexity evaluation scenarios (including out-of-scope, mathematical, and multi-file comparisons).
+  - Built a 4-key resilient fallback LLM pool (2 Groq keys + 2 OpenRouter keys) using **Gemini 2.5 Flash Free (`google/gemini-2.5-flash:free`)** on OpenRouter to natively support structured schemas and tool-calling at zero cost.
+  - Wrapped structured output fallbacks (`RouterDecision`, `GuardrailDecision`, `GraderDecision`) individually to preserve Pydantic schema validation across rate-limiting outages.
+  - Linked `groq_generators` to include all key fallbacks so that the tool-calling agent dynamically cascades across keys during tool executions.
+  - Bound the evaluation metrics to the HuggingFace embeddings singleton (`EmbeddingsManager.get_embeddings()`) to offload embedding math locally.
+  - Coded a dynamic FAISS & BM25 database cloner inside `run_eval.py` to copy active ingestion session data into the evaluation session environment.
+  - Exposed an authenticated, rate-limited FastAPI POST endpoint (`/api/eval/run`) to execute evaluations in a non-blocking background subprocess.
+  - Generated premium local Markdown reports under `backend/eval/reports/` and enabled real-time traces inside LangSmith.
+- **Phase 9.5 (Completed):** E2E Verification & Bug Fixing.
+  - Ran full end-to-end manual verification validating: parallel tool calling logs, dynamic log reconstruction from history, rate-limiting failovers, XSS hyperlink blocking, and coreference-routing sequences.
+  - Resolved RAGAS uppercase Metric class and lowercase module import conflicts, initializing metric objects with LLM and embedding runners explicitly.
+  - Transitioned to next steps.
 
 ## Pending Tasks
 - [x] Transition to Phase 6 (Conversational Memory & Session Management).
 - [x] Transition to Phase 7 (Reliability & Control Layer).
 - [x] Transition to Phase 8 (Robust Tool Calling Layer & System Hardening).
 - [x] Run full end-to-end manual verification: parallel tool calls, XSS link injection, upload race condition.
-- [ ] Transition to Phase 9 (Evaluation Layer).
+- [x] Transition to Phase 9 (Evaluation Layer).
 - [ ] Final Testing and Project Wrap-up.
 
 ## Current Limitations
-- No semantic routing guardrails or strict JSON structural validations are placed on the final generation output yet (planned for Phase 9).
+- The evaluation loop operates as an offline pipeline task; in the future, we can run real-time evaluations inline during active chats.
 - The tool-calling agent's synthesis step does not yet stream tokens; it falls back to a non-streaming invocation if the final streaming call fails.
 - `upload_jobs` is an in-memory dictionary; it will not survive server restarts. A Redis/DB-backed job store is needed for production.
 
 ## Next Milestone
-- Phase 9: Evaluation Layer — add automated LLM output evaluation metrics (faithfulness, answer relevance, context precision) using frameworks like RAGAS or DeepEval, and surface evaluation scores in the LangSmith traces.
+- Phase 10: Production Engineering — optimize backend memory consumption, finalize production clustering, and conduct full load-testing.
 
 ## Changed Files
 - `README.md`
@@ -115,6 +125,9 @@
 - `backend/services/tools.py`
 - `backend/services/embeddings_manager.py` *(new — Phase 8)*
 - `backend/test_prod_tooling.py` *(new — Phase 8)*
+- `backend/eval/run_eval.py` *(new — Phase 9)*
+- `backend/eval/test_set.json` *(new — Phase 9)*
+- `backend/eval/generate_synthetic_set.py` *(new — Phase 9)*
 - `frontend/src/index.css`
 - `frontend/src/App.jsx`
 

@@ -4,7 +4,7 @@ NexusAI is a production-grade Agentic AI platform focused on Hybrid RAG, Multi-A
 
 ## Architecture
 
-The system evolves progressively, currently standing at **Phase 8: Robust Tool Calling Layer & System Hardening**.
+The system evolves progressively, currently standing at **Phase 9: Evaluation Layer**.
 
 **High-Level Architecture (Target):**
 User -> Frontend UI -> FastAPI Backend -> LangGraph State Machine -> Supervisor/Orchestrator Agent -> Specialized Agents -> Hybrid Retrieval Layer -> Validation + Reliability Layer -> Control Layer -> Memory Layer -> Evaluation Layer -> Final Response Generator
@@ -558,6 +558,89 @@ execute_tool_calling_agent
 
 ---
 
+### Phase 9: Evaluation Layer
+
+This phase introduces a robust, automated **Evaluation Layer** to NexusAI, integrating the advanced RAGAS quality framework to score the agentic RAG pipeline's mathematical correctness while maintaining zero-delay multi-tier cloud fallbacks to completely bypass Gemini rate limits (429).
+
+**1. Automated RAG Quality Metrics (Pillar 1):**
+Using RAGAS, the system automatically computes scores for the core RAG Triad across a golden dataset of 12 high-complexity testing cases (including out-of-scope, mathematical, and multi-file comparison queries). Metrics are imported and initialized as modern component classes:
+- **Faithfulness:** Measures ground truth alignment of the generated response against retrieved contexts.
+- **Answer Relevancy:** Evaluates if the generated answer is targeted and directly addresses the query.
+- **Context Recall:** Validates if the retrieval engine fetched all necessary segments required to formulate the ground truth answer.
+
+```python
+# Inside backend/eval/run_eval.py
+from ragas.metrics.collections import Faithfulness, AnswerRelevancy, ContextRecall
+
+# Instantiate metric classes with their respective components
+faithfulness_metric = Faithfulness(llm=ragas_llm)
+answer_relevancy_metric = AnswerRelevancy(llm=ragas_llm, embeddings=ragas_embeddings)
+context_recall_metric = ContextRecall(llm=ragas_llm, embeddings=ragas_embeddings)
+```
+
+**2. Invincible 4-Key Cloud LLM Pool (Pillar 2):**
+To completely bypass Gemini rate limits, we built a load-balanced cloud LLM pool cascading across:
+- Primary and Secondary Groq keys (`llama-3.3-70b-versatile` / `llama-3.1-8b-instant`).
+- Primary and Secondary OpenRouter keys with **Gemini 2.5 Flash Free (`google/gemini-2.5-flash:free`)**, providing 100% stable compatibility for tool-calling and structured schemas at zero cost.
+
+**3. Structured-Output-Preserving Fallbacks (Pillar 3):**
+To ensure structured LangGraph nodes (`input_guardrail`, `route_intent`, `document_grader`) do not lose their type validation schemas when falling back, we configure each model in the key pool with structured output *before* binding them to a fallback chain:
+
+```python
+# Inside backend/eval/run_eval.py
+primary_router = model_groq_1.with_structured_output(RouterDecision)
+router_fallbacks = []
+if model_groq_2:
+    router_fallbacks.append(model_groq_2.with_structured_output(RouterDecision))
+if model_or_1:
+    router_fallbacks.append(model_or_1.with_structured_output(RouterDecision))
+if model_or_2:
+    router_fallbacks.append(model_or_2.with_structured_output(RouterDecision))
+
+resilient_router_llm = primary_router.with_fallbacks(router_fallbacks, exceptions_to_handle=[Exception])
+```
+
+**4. Resilient Tool-Calling Fallbacks (Pillar 4):**
+Rather than calling `.bind_tools()` on the fallback chain itself (which discards fallbacks), tools are bound to each fallback generator individually inside `groq_generators` (including the OpenRouter keys). This allows the tool-calling agent to fail over dynamically from Groq to OpenRouter during active tool loops:
+
+```python
+# Inside backend/services/agent_orchestrator.py
+gemini_with_tools = self.generation_llm.bind_tools(self.tools)
+fallback_tool_callers = [groq_gen.bind_tools(self.tools) for groq_gen in self.groq_generators]
+llm_with_tools = gemini_with_tools.with_fallbacks(fallback_tool_callers, exceptions_to_handle=[Exception])
+```
+
+**5. Process-level Embeddings Offloading (Pillar 5):**
+To save cloud usage and ensure fast evaluations, RAGAS metrics are bound to the local embedding singleton (`EmbeddingsManager.get_embeddings()`), avoiding expensive cloud embeddings APIs.
+
+```python
+# Inside backend/eval/run_eval.py
+from services.embeddings_manager import EmbeddingsManager
+from ragas.embeddings import LangchainEmbeddingsWrapper
+
+local_emb = EmbeddingsManager.get_embeddings()
+ragas_embeddings = LangchainEmbeddingsWrapper(local_emb)
+```
+
+**6. Active Session Database Cloning (Pillar 6):**
+The evaluation run automatically operates under a dedicated `"chat_evaluation_run"` session to keep evaluation logs separate. To prevent starting with an empty database, a cloning helper dynamically copies FAISS vectors and BM25 pickles from your active session into the evaluation session folder.
+
+**7. Asynchronous Non-Blocking FastAPI Route (Pillar 7):**
+An authenticated, rate-limited `/api/eval/run` endpoint triggers the evaluation script asynchronously in a background subprocess, protecting backend responsiveness.
+
+```python
+# Inside backend/main.py
+@app.post("/api/eval/run")
+@limiter.limit("5/minute")
+async def run_evaluation(current_user: str = Depends(get_current_user)):
+    # Starts run_eval.py as a background process and yields status update
+```
+
+**8. LangSmith Observability & Premium Markdown Reports (Pillar 8):**
+All evaluations are traced in LangSmith in real time. The script generates beautiful, local quality reports under `backend/eval/reports/` complete with micro-query comparison tables.
+
+---
+
 ## Folder Structure
 ```
 NexusAI/
@@ -596,6 +679,6 @@ NexusAI/
 - Phase 6.5: User Authentication & Security Isolation (Completed)
 - Phase 7: Reliability & Control Layer (Completed)
 - Phase 8: Robust Tool Calling Layer & System Hardening (Completed)
-- Phase 9: Evaluation Layer (Upcoming)
-- Phase 10: Production Engineering
+- Phase 9: Evaluation Layer (Completed)
+- Phase 10: Production Engineering (Upcoming)
 
