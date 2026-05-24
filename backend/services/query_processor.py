@@ -37,7 +37,7 @@ class QueryProcessor:
         
         # Initialize Gemini Chat Model (gemini-2.5-flash is fast, accurate, and cost-effective)
         # We set temperature to 0 to maximize determinism and reliability.
-        gemini_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        gemini_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, max_retries=1)
         
         # Check for Groq API Key and activate resilience layer
         groq_api_key = os.getenv("GROQ_API_KEY")
@@ -60,6 +60,7 @@ class QueryProcessor:
             ("system", (
                 "You are an intelligent research assistant for the NexusAI platform. "
                 "Use ONLY the following retrieved context to answer the user's question. "
+                "Provide a comprehensive, highly detailed, and well-structured explanation. Instead of generating a brief one-sentence reply, elaborate on the facts, explain any relevant calculations or details, and present a complete, professional response grounded strictly in the context. "
                 "If the answer is not in the context, explicitly state that you do not know. "
                 "Do not hallucinate or use outside knowledge.\n\n"
                 "CRITICAL CITATION RULES:\n"

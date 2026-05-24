@@ -54,6 +54,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NexusAI")
 
+# Silence verbose third-party loggers to keep console and logs clean
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("google_genai").setLevel(logging.WARNING)
+logging.getLogger("faiss").setLevel(logging.WARNING)
+
 from contextlib import asynccontextmanager
 
 # MongoDB Setup

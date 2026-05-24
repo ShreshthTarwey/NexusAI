@@ -1,546 +1,23 @@
 import { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Trash2, FileText, Network } from 'lucide-react';
 import './index.css';
 
-// Robust stateful Markdown parser for block elements (headers, lists with nested indents, tables, code blocks, blockquotes, and paragraphs)
-const MarkdownRenderer = ({ content, sources, toolSources }) => {
-  if (!content) return null;
+import LandingPage from './components/LandingPage';
+import AuthLayout from './components/AuthLayout';
+import Sidebar from './components/Sidebar';
+import UploadCard from './components/UploadCard';
+import ChatSection from './components/ChatSection';
 
-  const lines = content.split('\n');
-  const elements = [];
-  
-  let currentBlock = null; 
-  // Can be: 
-  // { type: 'paragraph', lines: [] }
-  // { type: 'list', listType: 'ul'|'ol', items: [] } (items: { text, indent }[])
-  // { type: 'table', rows: [] }
-  // { type: 'code', lang: '', lines: [] }
-  // { type: 'blockquote', lines: [] }
-
-  const flushCurrentBlock = (key) => {
-    if (!currentBlock) return;
-
-    if (currentBlock.type === 'paragraph') {
-      elements.push(
-        <p key={key} className="markdown-paragraph">
-          {currentBlock.lines.map((line, lIdx) => (
-            <span key={lIdx}>
-              {lIdx > 0 && <br />}
-              {parseInlineMarkdown(line, sources, toolSources)}
-            </span>
-          ))}
-        </p>
-      );
-    } else if (currentBlock.type === 'blockquote') {
-      elements.push(
-        <blockquote key={key} className="markdown-blockquote">
-          {currentBlock.lines.map((line, lIdx) => (
-            <div key={lIdx}>{parseInlineMarkdown(line, sources, toolSources)}</div>
-          ))}
-        </blockquote>
-      );
-    } else if (currentBlock.type === 'code') {
-      elements.push(
-        <pre key={key} className="markdown-code-block">
-          <code>{currentBlock.lines.join('\n')}</code>
-        </pre>
-      );
-    } else if (currentBlock.type === 'list') {
-      const ListTag = currentBlock.listType;
-      elements.push(
-        <ListTag key={key} className={`markdown-list-${currentBlock.listType}`}>
-          {currentBlock.items.map((item, i) => {
-            // Determine indent level based on spaces (e.g. 2 or 4 spaces = 1 indent level)
-            const level = item.indent >= 4 ? 2 : item.indent >= 2 ? 1 : 0;
-            const indentStyle = level > 0 ? { marginLeft: `${level * 1.25}rem` } : {};
-            
-            return (
-              <li 
-                key={i} 
-                className={`markdown-list-item indent-${level}`} 
-                style={{
-                  ...indentStyle,
-                  listStyleType: level === 0 ? 'disc' : level === 1 ? 'circle' : 'square'
-                }}
-              >
-                {parseInlineMarkdown(item.text, sources, toolSources)}
-              </li>
-            );
-          })}
-        </ListTag>
-      );
-    } else if (currentBlock.type === 'table') {
-      const rows = currentBlock.rows;
-      if (rows.length >= 2) {
-        // Find clean headers
-        const headerCells = rows[0].split('|').map(c => c.trim()).filter((c, idx, arr) => {
-          if (idx === 0 && c === '') return false;
-          if (idx === arr.length - 1 && c === '') return false;
-          return true;
-        });
-
-        // Filter and clean rows, skipping separator rows (containing dashed dividers)
-        const bodyRows = rows.slice(1)
-          .filter(r => !r.includes('---'))
-          .map(r => 
-            r.split('|').map(c => c.trim()).filter((c, idx, arr) => {
-              if (idx === 0 && c === '') return false;
-              if (idx === arr.length - 1 && c === '') return false;
-              return true;
-            })
-          );
-        
-        elements.push(
-          <div className="table-responsive" key={key}>
-            <table className="comparison-table">
-              <thead>
-                <tr>
-                  {headerCells.map((cell, idx) => (
-                    <th key={idx}>{parseInlineMarkdown(cell, sources, toolSources)}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {bodyRows.map((row, rIdx) => (
-                  <tr key={rIdx}>
-                    {row.map((cell, cIdx) => (
-                      <td key={cIdx}>{parseInlineMarkdown(cell, sources, toolSources)}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        );
-      } else {
-        // Render incomplete table rows as plain text during streaming
-        elements.push(
-          <div key={key} className="markdown-text">
-            {rows.map((r, i) => <div key={i}>{r}</div>)}
-          </div>
-        );
-      }
-    }
-
-    currentBlock = null;
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
-
-    // 1. Fenced Code Block
-    if (trimmed.startsWith('```')) {
-      if (currentBlock && currentBlock.type === 'code') {
-        flushCurrentBlock(`code-${i}`);
-      } else {
-        flushCurrentBlock(`pre-code-${i}`);
-        const lang = trimmed.slice(3).trim();
-        currentBlock = { type: 'code', lang, lines: [] };
-      }
-      continue;
-    }
-
-    if (currentBlock && currentBlock.type === 'code') {
-      currentBlock.lines.push(line);
-      continue;
-    }
-
-    // 2. Empty Line
-    if (!trimmed) {
-      flushCurrentBlock(`empty-${i}`);
-      continue;
-    }
-
-    // 3. Headers
-    if (trimmed.startsWith('#')) {
-      const match = trimmed.match(/^(#{1,6})\s+(.*)$/);
-      if (match) {
-        flushCurrentBlock(`header-pre-${i}`);
-        const level = match[1].length;
-        const text = match[2];
-        const Tag = `h${level}`;
-        elements.push(
-          <Tag key={`h-${i}`} className={`markdown-h${level}`}>
-            {parseInlineMarkdown(text, sources, toolSources)}
-          </Tag>
-        );
-        continue;
-      }
-    }
-
-    // 4. Blockquotes
-    if (trimmed.startsWith('>')) {
-      const text = trimmed.slice(1).trim();
-      if (currentBlock && currentBlock.type === 'blockquote') {
-        currentBlock.lines.push(text);
-      } else {
-        flushCurrentBlock(`quote-pre-${i}`);
-        currentBlock = { type: 'blockquote', lines: [text] };
-      }
-      continue;
-    }
-
-    // 5. Tables
-    if (trimmed.startsWith('|')) {
-      if (currentBlock && currentBlock.type === 'table') {
-        currentBlock.rows.push(line);
-      } else {
-        flushCurrentBlock(`table-pre-${i}`);
-        currentBlock = { type: 'table', rows: [line] };
-      }
-      continue;
-    }
-
-    // 6. Bullet Lists
-    const bulletMatch = line.match(/^(\s*)[\*\-\+]\s+(.*)$/);
-    if (bulletMatch) {
-      const indent = bulletMatch[1].length;
-      const text = bulletMatch[2];
-      if (currentBlock && currentBlock.type === 'list' && currentBlock.listType === 'ul') {
-        currentBlock.items.push({ text, indent });
-      } else {
-        flushCurrentBlock(`list-pre-${i}`);
-        currentBlock = { type: 'list', listType: 'ul', items: [{ text, indent }] };
-      }
-      continue;
-    }
-
-    // 7. Numbered Lists
-    const numMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
-    if (numMatch) {
-      const indent = numMatch[1].length;
-      const text = numMatch[3];
-      if (currentBlock && currentBlock.type === 'list' && currentBlock.listType === 'ol') {
-        currentBlock.items.push({ text, indent });
-      } else {
-        flushCurrentBlock(`list-pre-${i}`);
-        currentBlock = { type: 'list', listType: 'ol', items: [{ text, indent }] };
-      }
-      continue;
-    }
-
-    // 8. Paragraph (fallback)
-    if (currentBlock && currentBlock.type === 'paragraph') {
-      currentBlock.lines.push(line);
-    } else {
-      flushCurrentBlock(`para-pre-${i}`);
-      currentBlock = { type: 'paragraph', lines: [line] };
-    }
-  }
-
-  flushCurrentBlock('final');
-
-  return <div className="markdown-body">{elements}</div>;
-};
-
-// Helper to find the actual content chunk associated with a citation value
-const findSourceChunk = (sourceVal, sourcesList = [], toolSourcesList = []) => {
-  const allSources = [...(sourcesList || []), ...(toolSourcesList || [])];
-  const isWeb = sourceVal.startsWith('web:');
-  const isCalc = sourceVal.startsWith('calc:') || sourceVal.startsWith('math:');
-
-  if (isWeb) {
-    const queryTerm = sourceVal.slice(4).trim();
-    // 1. Exact match on query parameter in web_search input
-    for (const src of allSources) {
-      if (src.metadata?.source_file === 'tool:web_search') {
-        const content = src.content || '';
-        if (content.toLowerCase().includes(queryTerm.toLowerCase())) {
-          const outputMarker = 'Output:';
-          const idx = content.indexOf(outputMarker);
-          if (idx !== -1) return content.substring(idx + outputMarker.length).trim();
-          return content;
-        }
-      }
-    }
-    // 2. Fallback: match any web search content if queryTerm not explicitly in content
-    for (const src of allSources) {
-      if (src.metadata?.source_file === 'tool:web_search') {
-        const content = src.content || '';
-        const outputMarker = 'Output:';
-        const idx = content.indexOf(outputMarker);
-        if (idx !== -1) return content.substring(idx + outputMarker.length).trim();
-        return content;
-      }
-    }
-  } else if (isCalc) {
-    const exprTerm = sourceVal.split(':')[1]?.trim() || '';
-    for (const src of allSources) {
-      if (src.metadata?.source_file === 'tool:safe_calculator') {
-        const content = src.content || '';
-        if (!exprTerm || content.toLowerCase().includes(exprTerm.toLowerCase())) {
-          const outputMarker = 'Output:';
-          const idx = content.indexOf(outputMarker);
-          if (idx !== -1) return `${exprTerm} = ${content.substring(idx + outputMarker.length).trim()}`;
-          return content;
-        }
-      }
-    }
-    // Fallback: return first calculator tool output
-    for (const src of allSources) {
-      if (src.metadata?.source_file === 'tool:safe_calculator') {
-        return src.content || '';
-      }
-    }
-  } else {
-    // Local document search
-    let targetFile = sourceVal;
-    let targetPage = null;
-    const commaIdx = sourceVal.indexOf(',');
-    if (commaIdx !== -1) {
-      targetFile = sourceVal.substring(0, commaIdx).trim();
-      const pagePart = sourceVal.substring(commaIdx + 1).trim();
-      const pageMatch = pagePart.match(/(?:Page|Pages):\s*(\d+)/i);
-      if (pageMatch) {
-        targetPage = parseInt(pageMatch[1], 10);
-      }
-    }
-
-    // 1. Direct match by filename and page (from Simple/Compare RAG)
-    if (targetPage !== null) {
-      for (const src of allSources) {
-        if (src.metadata?.source_file === targetFile) {
-          const srcPage = src.metadata?.page;
-          if (srcPage !== undefined && (srcPage === targetPage || srcPage === targetPage - 1 || String(srcPage) === String(targetPage))) {
-            return src.content;
-          }
-        }
-      }
-    }
-
-    // 2. Direct match by filename alone (fallback)
-    for (const src of allSources) {
-      if (src.metadata?.source_file === targetFile) {
-        return src.content;
-      }
-    }
-    
-    // 3. Parsed match inside knowledge_base_search output
-    for (const src of allSources) {
-      if (src.metadata?.source_file === 'tool:knowledge_base_search') {
-        const content = src.content || '';
-        const outputMarker = 'Output:';
-        const idx = content.indexOf(outputMarker);
-        if (idx !== -1) {
-          const outputText = content.substring(idx + outputMarker.length);
-          const blocks = outputText.split(/\n+\-\-\-\n+/);
-          for (const block of blocks) {
-            if (block.includes(`[Source: ${targetFile}`)) {
-              const headerEnd = block.indexOf(']');
-              if (headerEnd !== -1) return block.substring(headerEnd + 1).trim();
-              return block.trim();
-            }
-          }
-        }
-      }
-    }
-  }
-  return null;
-};
-
-// Interactive source badge showing custom hover popup card
-const InlineSourceBadge = ({ sourceVal, sources, toolSources }) => {
-  const [showTooltip, setShowTooltip] = useState(false);
-  const isWeb = sourceVal.startsWith('web:');
-  const isCalc = sourceVal.startsWith('calc:') || sourceVal.startsWith('math:');
-  
-  const displayLabel = isWeb 
-    ? `🌐 ${sourceVal.slice(4)}` 
-    : isCalc 
-    ? `🧮 ${sourceVal.split(':')[1] || sourceVal}` 
-    : `📄 ${sourceVal}`;
-    
-  const chunkContent = findSourceChunk(sourceVal, sources, toolSources);
-
-  return (
-    <span 
-      className="inline-source-badge-container"
-      onMouseEnter={() => setShowTooltip(true)}
-      onMouseLeave={() => setShowTooltip(false)}
-    >
-      <span className="inline-source-badge">
-        {displayLabel}
-      </span>
-      {showTooltip && (
-        <span className="source-popover">
-          <span className="popover-header">
-            <span className="popover-icon">{isWeb ? '🌐' : isCalc ? '🧮' : '📄'}</span>
-            <span className="popover-title">
-              {isWeb ? 'Web Search Grounding' : isCalc ? 'Calculated Result' : 'Document Grounding'}
-            </span>
-          </span>
-          <span className="popover-meta">
-            {isWeb ? `Query: "${sourceVal.slice(4)}"` : isCalc ? `Expression: ${sourceVal.split(':')[1] || ''}` : `File: ${sourceVal}`}
-          </span>
-          <span className="popover-body">
-            {chunkContent ? chunkContent : "No matching grounding chunk found in session sources."}
-          </span>
-          <span className="popover-arrow"></span>
-        </span>
-      )}
-    </span>
-  );
-};
-
-// Helper to parse inline markdown (bold, code, links, and source citations)
-const parseInlineMarkdown = (text, sources, toolSources) => {
-  if (!text) return '';
-  const regex = /(\*\*.*?\*\*|`.*?`|\[.*?\]\(.*?\)|\[Source:\s*.*?\])/g;
-  const parts = text.split(regex);
-
-  return parts.map((part, index) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={index} style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{part.slice(2, -2)}</strong>;
-    }
-    if (part.startsWith('`') && part.endsWith('`')) {
-      return <code key={index} className="inline-code">{part.slice(1, -1)}</code>;
-    }
-    if (part.startsWith('[Source:') && part.endsWith(']')) {
-      const sourceVal = part.slice(8, -1).trim();
-      return (
-        <InlineSourceBadge 
-          key={index} 
-          sourceVal={sourceVal} 
-          sources={sources} 
-          toolSources={toolSources} 
-        />
-      );
-    }
-    if (part.startsWith('[') && part.includes('](') && part.endsWith(')')) {
-      const match = part.match(/^\[(.*?)\]\((.*?)\)$/);
-      if (match) {
-        const url = match[2].trim();
-        const urlLower = url.toLowerCase();
-        const hasProtocol = /^[a-z]+:/i.test(urlLower);
-        let isSafe = false;
-        
-        if (!hasProtocol) {
-          // Relative URLs are safe
-          isSafe = true;
-        } else {
-          // Allow http, https, mailto, tel, and file (for local workspace links)
-          isSafe = urlLower.startsWith('http://') || 
-                   urlLower.startsWith('https://') || 
-                   urlLower.startsWith('mailto:') || 
-                   urlLower.startsWith('tel:') || 
-                   urlLower.startsWith('file://');
-        }
-        
-        if (isSafe && !/^\s*javascript:/i.test(url)) {
-          return <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="markdown-link">{match[1]}</a>;
-        } else {
-          return <span key={index} className="markdown-link-disabled" title="Blocked potentially unsafe link" style={{ textDecoration: 'line-through', opacity: 0.6 }}>{match[1]}</span>;
-        }
-      }
-    }
-    return part;
-  });
-};
-
-// Helper to reconstruct tool execution logs from sources for database-loaded history messages
-const getToolLogEntries = (msg) => {
-  if (msg.toolLog && msg.toolLog.length > 0) {
-    return msg.toolLog;
-  }
-  if (!msg.sources) return [];
-  
-  const entries = [];
-  for (const src of msg.sources) {
-    const filename = src.metadata?.source_file || '';
-    if (filename.startsWith('tool:')) {
-      const toolName = filename.substring(5);
-      const content = src.content || '';
-      
-      let inputVal = '';
-      let outputVal = '';
-      const inputMarker = 'Input:';
-      const outputMarker = 'Output:';
-      
-      const inputIdx = content.indexOf(inputMarker);
-      const outputIdx = content.indexOf(outputMarker);
-      
-      if (inputIdx !== -1 && outputIdx !== -1) {
-        inputVal = content.substring(inputIdx + inputMarker.length, outputIdx).trim();
-        outputVal = content.substring(outputIdx + outputMarker.length).trim();
-      } else {
-        inputVal = content;
-      }
-      
-      entries.push({
-        name: toolName,
-        input: inputVal,
-        output: outputVal
-      });
-    }
-  }
-  return entries;
-};
-
-// Collapsible Tool Execution Log — shown inside each assistant message that used tools
-const ToolExecutionLog = ({ entries }) => {
-  const [open, setOpen] = useState(false);
-
-  const toolIcons = {
-    web_search: '🌐',
-    safe_calculator: '🧮',
-    knowledge_base_search: '🔍',
-  };
-
-  return (
-    <div className="tool-log-container">
-      <button
-        className={`tool-log-toggle ${open ? 'open' : ''}`}
-        onClick={() => setOpen(prev => !prev)}
-        aria-expanded={open}
-      >
-        <span className="tool-log-toggle-icon">{open ? '▾' : '▸'}</span>
-        <span>Tool Execution Log</span>
-        <span className="tool-log-count">{entries.length} step{entries.length !== 1 ? 's' : ''}</span>
-      </button>
-
-      {open && (
-        <div className="tool-log-body">
-          {entries.map((entry, i) => (
-            <div key={i} className="tool-log-entry">
-              <div className="tool-log-header">
-                <span className="tool-log-icon">{toolIcons[entry.name] || '🔧'}</span>
-                <span className="tool-log-name">{entry.name}</span>
-                <span className="tool-log-step">Step {i + 1}</span>
-              </div>
-              <div className="tool-log-field">
-                <span className="tool-log-label">Input</span>
-                <span className="tool-log-value">{String(entry.input)}</span>
-              </div>
-              {entry.output && (
-                <div className="tool-log-field">
-                  <span className="tool-log-label">Output</span>
-                  <span className="tool-log-value tool-log-output">{String(entry.output)}</span>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-const formatToolInput = (inputStr) => {
-  if (!inputStr) return '';
-  // Match single or double quoted values for keys like 'query' or 'expression' in stringified python dicts
-  const match = inputStr.match(/'(?:query|expression)':\s*['"](.*?)['"]/);
-  if (match) {
-    return match[1];
-  }
-  return inputStr;
-};
-
+// ── View states: 'landing' | 'auth' | 'workspace'
 function App() {
-  const [token, setToken] = useState(localStorage.getItem('nexusai_token') || null);
+  const storedToken = localStorage.getItem('nexusai_token');
+  const [view, setView] = useState(storedToken ? 'workspace' : 'landing');
+  const [token, setToken] = useState(storedToken || null);
   const [currentUser, setCurrentUser] = useState(localStorage.getItem('nexusai_username') || null);
-  
+
   // Auth Form State
-  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [authMode, setAuthMode] = useState('login');
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authConfirmPassword, setAuthConfirmPassword] = useState('');
@@ -548,90 +25,60 @@ function App() {
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
+  // Workspace State
   const [sessions, setSessions] = useState([]);
   const [currentSession, setCurrentSession] = useState('default');
   const [files, setFiles] = useState([]);
   const [status, setStatus] = useState('idle');
   const [response, setResponse] = useState(null);
+  const [chunkCount, setChunkCount] = useState(null); // track ingested chunks
   const fileInputRef = useRef(null);
 
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
   const [isQuerying, setIsQuerying] = useState(false);
-  const [activeTool, setActiveTool] = useState(null); // { name, input } | null
-  const [toolLog, setToolLog] = useState([]); // [{ name, input, output }] for current streaming msg
-  const messagesEndRef = useRef(null);
+  const [activeTool, setActiveTool] = useState(null);
+  const [toolLog, setToolLog] = useState([]);
   const activeToolStartTimeRef = useRef(0);
   const activeToolTimeoutRef = useRef(null);
 
-  // Authenticated custom fetch wrapper
+  // Authenticated fetch wrapper
   const apiFetch = async (path, options = {}) => {
     const url = `http://localhost:8000${path}`;
     const headers = options.headers || {};
-    const storedToken = localStorage.getItem('nexusai_token');
-    
-    if (storedToken) {
-      headers['Authorization'] = `Bearer ${storedToken}`;
-    }
-    
-    const newOptions = {
-      ...options,
-      headers
-    };
-    
+    const t = localStorage.getItem('nexusai_token');
+    if (t) headers['Authorization'] = `Bearer ${t}`;
     try {
-      const res = await fetch(url, newOptions);
+      const res = await fetch(url, { ...options, headers });
       if (res.status === 401) {
-        localStorage.removeItem('nexusai_token');
-        localStorage.removeItem('nexusai_username');
-        setToken(null);
-        setCurrentUser(null);
-        setSessions([]);
-        setCurrentSession('default');
-        setMessages([]);
-        setFiles([]);
-        setStatus('idle');
-        setResponse(null);
-        throw new Error("Session expired. Please log in again.");
+        handleLogout();
+        throw new Error('Session expired. Please log in again.');
       }
       return res;
     } catch (err) {
-      console.error(`API Fetch Error on ${path}:`, err);
+      console.error(`API error on ${path}:`, err);
       throw err;
     }
   };
 
-  // Fetch all sessions on load / login change
   useEffect(() => {
-    if (token) {
-      fetchSessions();
-    }
+    if (token) fetchSessions();
   }, [token]);
 
-  // When session changes, fetch its messages
   useEffect(() => {
     if (currentSession && currentSession !== 'default') {
       fetchSessionMessages(currentSession);
     } else {
-      setMessages([]);
-      setFiles([]);
-      setStatus('idle');
-      setResponse(null);
+      setMessages([]); setFiles([]); setStatus('idle'); setResponse(null);
     }
   }, [currentSession]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
 
   const fetchSessions = async () => {
     try {
       const res = await apiFetch('/api/sessions');
       const data = await res.json();
       setSessions(data.sessions || []);
-    } catch (e) {
-      console.error("Failed to fetch sessions", e);
-    }
+    } catch (e) { console.error('Failed to fetch sessions', e); }
   };
 
   const fetchSessionMessages = async (sessionId) => {
@@ -641,14 +88,12 @@ function App() {
       const data = await res.json();
       if (data.messages && data.messages.length > 0) {
         setMessages(data.messages);
-        setStatus('success'); // Assume if there are messages, db has files
+        setStatus('success');
       } else {
-        setMessages([]);
-        setStatus('idle');
+        setMessages([]); setStatus('idle');
+        setChunkCount(null);
       }
-    } catch (e) {
-      console.error("Failed to fetch messages", e);
-    }
+    } catch (e) { console.error('Failed to fetch messages', e); }
   };
 
   const handleNewChat = async () => {
@@ -658,81 +103,57 @@ function App() {
       setCurrentSession(data.session_id);
       fetchSessions();
       return data.session_id;
-    } catch (e) {
-      console.error("Failed to create new chat", e);
-      return null;
-    }
+    } catch (e) { console.error('Failed to create chat', e); return null; }
   };
 
   const handleDeleteSession = async (e, sessionId) => {
     e.stopPropagation();
-    if (!window.confirm("Delete this chat?")) return;
+    if (!window.confirm('Delete this chat?')) return;
     try {
       await apiFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
-      if (currentSession === sessionId) {
-        setCurrentSession('default');
-      }
+      if (currentSession === sessionId) setCurrentSession('default');
       fetchSessions();
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (err) { console.error(err); }
   };
 
   const handleFileChange = (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setFiles(Array.from(e.target.files));
+    const fileList = e.target?.files || e;
+    const arr = Array.isArray(fileList) ? fileList : Array.from(fileList);
+    if (arr.length > 0) {
+      setFiles(arr);
       setStatus('idle');
       setResponse(null);
-      // Auto-create a session if we are in default state
-      if (currentSession === 'default') {
-        handleNewChat();
-      }
+      if (currentSession === 'default') handleNewChat();
     }
   };
 
   const handleUploadClick = async () => {
     if (currentSession === 'default') {
-      const newSessionId = await handleNewChat();
-      if (!newSessionId) {
-        alert("Failed to initialize a new session. Please try again.");
-        return;
-      }
+      const id = await handleNewChat();
+      if (!id) { alert('Failed to initialize session.'); return; }
     }
-    fileInputRef.current.click();
+    fileInputRef.current?.click();
   };
 
   const handleClearDatabase = async () => {
-    if (!window.confirm("Are you sure you want to wipe the knowledge base? This will delete all uploaded documents.")) return;
+    if (!window.confirm('Wipe the knowledge base for this session?')) return;
     try {
       await apiFetch(`/api/clear?session_id=${currentSession}`, { method: 'DELETE' });
-      setFiles([]);
-      setMessages([]);
-      setStatus('idle');
-      setResponse(null);
-    } catch (error) {
-      console.error("Error clearing DB:", error);
-    }
+      setFiles([]); setMessages([]); setStatus('idle'); setResponse(null);
+    } catch (err) { console.error('Error clearing DB:', err); }
   };
 
   const handleSubmit = async () => {
     if (files.length === 0) return;
     setStatus('uploading');
     const formData = new FormData();
-    files.forEach(file => {
-      formData.append('files', file);
-    });
+    files.forEach(f => formData.append('files', f));
     formData.append('session_id', currentSession);
-
     try {
-      const res = await apiFetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const res = await apiFetch('/api/upload', { method: 'POST', body: formData });
       if (!res.ok) throw new Error('Upload failed');
       const data = await res.json();
-      if (data.job_id) {
-        pollUploadStatus(data.job_id);
-      }
+      if (data.job_id) pollUploadStatus(data.job_id);
     } catch (error) {
       setStatus('error');
       setResponse({ error: error.message });
@@ -748,9 +169,10 @@ function App() {
           clearInterval(interval);
           setResponse(data);
           setStatus('success');
+          if (data.chunks) setChunkCount(data.chunks);
           setMessages(prev => [...prev, {
             role: 'assistant',
-            content: `I've successfully ingested the document (${data.chunks} chunks). How can I help you analyze it?`
+            content: `I've successfully ingested **${data.chunks} chunks** from your document. The knowledge base is ready — ask me anything.`,
           }]);
         } else if (data.status === 'error') {
           clearInterval(interval);
@@ -768,10 +190,7 @@ function App() {
   const handleQuerySubmit = async (e) => {
     e.preventDefault();
     if (!query.trim() || isQuerying) return;
-    if (currentSession === 'default') {
-        alert("Please create a New Chat first.");
-        return;
-    }
+    if (currentSession === 'default') { alert('Please create a New Chat first.'); return; }
 
     const userMessage = { role: 'user', content: query };
     setMessages(prev => [...prev, userMessage]);
@@ -792,11 +211,8 @@ function App() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let done = false;
-      let buffer = '';
-      // Local log accumulated during stream (to set on message at end)
-      let currentToolLog = [];
-      let pendingToolsMap = {};
+      let done = false, buffer = '';
+      let currentToolLog = [], pendingToolsMap = {};
 
       while (!done) {
         const { value, done: readerDone } = await reader.read();
@@ -807,114 +223,84 @@ function App() {
           buffer = lines.pop();
 
           for (const line of lines) {
-            if (line.trim().startsWith('data: ')) {
-              try {
-                const jsonStr = line.replace(/^data:\s*/, '');
-                if (!jsonStr.trim()) continue;
-                const data = JSON.parse(jsonStr);
+            if (!line.trim().startsWith('data: ')) continue;
+            try {
+              const jsonStr = line.replace(/^data:\s*/, '');
+              if (!jsonStr.trim()) continue;
+              const data = JSON.parse(jsonStr);
 
-                // ── Text token ──────────────────────────────────────────────
-                if (data.text) {
-                  const elapsed = Date.now() - activeToolStartTimeRef.current;
-                  const minDuration = 1500;
-                  if (elapsed < minDuration) {
-                    if (!activeToolTimeoutRef.current) {
-                      activeToolTimeoutRef.current = setTimeout(() => {
-                        setActiveTool(null);
-                        activeToolTimeoutRef.current = null;
-                      }, minDuration - elapsed);
-                    }
-                  } else {
-                    setActiveTool(null);
+              if (data.text) {
+                const elapsed = Date.now() - activeToolStartTimeRef.current;
+                const minDuration = 1500;
+                if (elapsed < minDuration) {
+                  if (!activeToolTimeoutRef.current) {
+                    activeToolTimeoutRef.current = setTimeout(() => {
+                      setActiveTool(null);
+                      activeToolTimeoutRef.current = null;
+                    }, minDuration - elapsed);
                   }
-                  setMessages(prev => {
-                    const newMessages = [...prev];
-                    const lastMsgIndex = newMessages.length - 1;
-                    newMessages[lastMsgIndex] = {
-                      ...newMessages[lastMsgIndex],
-                      content: newMessages[lastMsgIndex].content + data.text
-                    };
-                    return newMessages;
-                  });
+                } else {
+                  setActiveTool(null);
                 }
-
-                // ── Document sources ─────────────────────────────────────────
-                if (data.sources) {
-                  setMessages(prev => {
-                    const newMessages = [...prev];
-                    const lastMsgIndex = newMessages.length - 1;
-                    newMessages[lastMsgIndex] = {
-                      ...newMessages[lastMsgIndex],
-                      sources: data.sources
-                    };
-                    return newMessages;
-                  });
-                }
-
-                // ── Tool sources (execution log) ──────────────────────────────
-                if (data.tool_sources) {
-                  setMessages(prev => {
-                    const newMessages = [...prev];
-                    const lastMsgIndex = newMessages.length - 1;
-                    newMessages[lastMsgIndex] = {
-                      ...newMessages[lastMsgIndex],
-                      toolSources: data.tool_sources
-                    };
-                    return newMessages;
-                  });
-                }
-
-                // ── Tool status: started ──────────────────────────────────────
-                if (data.tool_status === 'start') {
-                  if (activeToolTimeoutRef.current) {
-                    clearTimeout(activeToolTimeoutRef.current);
-                    activeToolTimeoutRef.current = null;
-                  }
-                  activeToolStartTimeRef.current = Date.now();
-                  pendingToolsMap[data.tool_name] = { name: data.tool_name, input: data.tool_input, output: null };
-                  setActiveTool({ name: data.tool_name, input: data.tool_input });
-                }
-
-                // ── Tool status: completed ────────────────────────────────────
-                if (data.tool_status === 'end') {
-                  const entry = pendingToolsMap[data.tool_name];
-                  if (entry) {
-                    entry.output = data.tool_output;
-                    currentToolLog = [...currentToolLog, entry];
-                    setToolLog([...currentToolLog]);
-                    delete pendingToolsMap[data.tool_name];
-                  }
-                }
-
-              } catch (e) {
-                console.warn("Failed to parse SSE line", e);
+                setMessages(prev => {
+                  const msgs = [...prev];
+                  const last = msgs.length - 1;
+                  msgs[last] = { ...msgs[last], content: msgs[last].content + data.text };
+                  return msgs;
+                });
               }
-            }
+
+              if (data.sources) {
+                setMessages(prev => {
+                  const msgs = [...prev];
+                  msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], sources: data.sources };
+                  return msgs;
+                });
+              }
+
+              if (data.tool_sources) {
+                setMessages(prev => {
+                  const msgs = [...prev];
+                  msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], toolSources: data.tool_sources };
+                  return msgs;
+                });
+              }
+
+              if (data.tool_status === 'start') {
+                if (activeToolTimeoutRef.current) {
+                  clearTimeout(activeToolTimeoutRef.current);
+                  activeToolTimeoutRef.current = null;
+                }
+                activeToolStartTimeRef.current = Date.now();
+                pendingToolsMap[data.tool_name] = { name: data.tool_name, input: data.tool_input, output: null };
+                setActiveTool({ name: data.tool_name, input: data.tool_input });
+              }
+
+              if (data.tool_status === 'end') {
+                const entry = pendingToolsMap[data.tool_name];
+                if (entry) {
+                  entry.output = data.tool_output;
+                  currentToolLog = [...currentToolLog, entry];
+                  setToolLog([...currentToolLog]);
+                  delete pendingToolsMap[data.tool_name];
+                }
+              }
+            } catch (e) { console.warn('Failed to parse SSE line', e); }
           }
         }
       }
 
-      // Attach accumulated tool log to the last message
       if (currentToolLog.length > 0) {
         setMessages(prev => {
-          const newMessages = [...prev];
-          const lastMsgIndex = newMessages.length - 1;
-          newMessages[lastMsgIndex] = {
-            ...newMessages[lastMsgIndex],
-            toolLog: currentToolLog
-          };
-          return newMessages;
+          const msgs = [...prev];
+          msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], toolLog: currentToolLog };
+          return msgs;
         });
       }
 
-      // Update session title dynamically after first query completes
       fetchSessions();
-
     } catch (error) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `Error: ${error.message}.`
-      }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${error.message}.` }]);
     } finally {
       setIsQuerying(false);
       if (activeToolTimeoutRef.current) {
@@ -929,48 +315,30 @@ function App() {
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
-    
     const username = authUsername.trim();
     const password = authPassword;
-    
-    if (!username || !password) {
-      setAuthError('Please fill in all fields.');
-      return;
-    }
-    
-    if (authMode === 'signup' && password !== authConfirmPassword) {
-      setAuthError('Passwords do not match.');
-      return;
-    }
-    
+    if (!username || !password) { setAuthError('Please fill in all fields.'); return; }
+    if (authMode === 'signup' && password !== authConfirmPassword) { setAuthError('Passwords do not match.'); return; }
     setAuthLoading(true);
-    
     try {
       const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
       const res = await fetch(`http://localhost:8000${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ username, password }),
       });
-      
       const data = await res.json();
-      
-      if (!res.ok) {
-        throw new Error(data.detail || 'Authentication failed');
-      }
-      
+      if (!res.ok) throw new Error(data.detail || 'Authentication failed');
       if (authMode === 'login') {
         localStorage.setItem('nexusai_token', data.access_token);
         localStorage.setItem('nexusai_username', data.username);
         setToken(data.access_token);
         setCurrentUser(data.username);
-        setAuthUsername('');
-        setAuthPassword('');
-        setAuthConfirmPassword('');
+        setAuthUsername(''); setAuthPassword(''); setAuthConfirmPassword('');
+        setView('workspace');
       } else {
         setAuthMode('login');
-        setAuthPassword('');
-        setAuthConfirmPassword('');
+        setAuthPassword(''); setAuthConfirmPassword('');
         setAuthError('Successfully registered! Please sign in.');
       }
     } catch (err) {
@@ -983,312 +351,269 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem('nexusai_token');
     localStorage.removeItem('nexusai_username');
-    setToken(null);
-    setCurrentUser(null);
-    setSessions([]);
-    setCurrentSession('default');
-    setMessages([]);
-    setFiles([]);
-    setStatus('idle');
-    setResponse(null);
+    setToken(null); setCurrentUser(null);
+    setSessions([]); setCurrentSession('default');
+    setMessages([]); setFiles([]); setStatus('idle'); setResponse(null);
+    setView('landing');
   };
 
-  // Auth UI Gate
-  if (!token) {
-    return (
-      <div className="auth-layout">
-        <div className="auth-card">
-          <div className="auth-header">
-            <h1 className="auth-logo">NexusAI</h1>
-            <p className="auth-subtitle">Self-Correcting Multi-Agent Intelligence</p>
-          </div>
-          
-          <div className="auth-tabs">
-            <button 
-              className={`auth-tab ${authMode === 'login' ? 'active' : ''}`}
-              onClick={() => { setAuthMode('login'); setAuthError(''); }}
-            >
-              Sign In
-            </button>
-            <button 
-              className={`auth-tab ${authMode === 'signup' ? 'active' : ''}`}
-              onClick={() => { setAuthMode('signup'); setAuthError(''); }}
-            >
-              Sign Up
-            </button>
-          </div>
+  const currentSessionTitle = sessions.find(s => s.session_id === currentSession)?.title;
 
-          <form className="auth-form" onSubmit={handleAuthSubmit}>
-            {authError && (
-              <div className={`auth-message ${authError.includes('Successfully') ? 'success' : 'error'}`}>
-                {authError}
-              </div>
-            )}
-            
-            <div className="form-group">
-              <label htmlFor="username">Username</label>
-              <input
-                type="text"
-                id="username"
-                className="auth-input"
-                placeholder="Enter username"
-                value={authUsername}
-                onChange={(e) => setAuthUsername(e.target.value)}
-                required
-              />
-            </div>
-            
-            <div className="form-group">
-              <label htmlFor="password">Password</label>
-              <div className="password-input-wrapper">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  id="password"
-                  className="auth-input"
-                  placeholder="Enter password"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  required
-                />
-                <button
-                  type="button"
-                  className="password-toggle"
-                  onClick={() => setShowPassword(!showPassword)}
-                >
-                  {showPassword ? "👁" : "👁‍🗨"}
-                </button>
-              </div>
-            </div>
-            
-            {authMode === 'signup' && (
-              <div className="form-group">
-                <label htmlFor="confirmPassword">Confirm Password</label>
-                <input
-                  type={showPassword ? "text" : "password"}
-                  id="confirmPassword"
-                  className="auth-input"
-                  placeholder="Confirm password"
-                  value={authConfirmPassword}
-                  onChange={(e) => setAuthConfirmPassword(e.target.value)}
-                  required
-                />
-              </div>
-            )}
-            
-            <button type="submit" className="auth-submit-btn" disabled={authLoading}>
-              {authLoading ? (
-                <div className="loading-spinner" style={{ width: '1.2rem', height: '1.2rem', margin: '0 auto' }}></div>
-              ) : (
-                authMode === 'login' ? 'Sign In' : 'Create Account'
-              )}
-            </button>
-          </form>
-          
-          <div className="auth-footer">
-            🔒 Secure multi-tenant workspace powered by MongoDB
-          </div>
-        </div>
-      </div>
+  // ── Render views
+  if (view === 'landing') {
+    return <LandingPage onEnter={() => setView(storedToken ? 'workspace' : 'auth')} />;
+  }
+
+  if (view === 'auth' || !token) {
+    return (
+      <AuthLayout
+        authMode={authMode}
+        setAuthMode={setAuthMode}
+        authUsername={authUsername}
+        setAuthUsername={setAuthUsername}
+        authPassword={authPassword}
+        setAuthPassword={setAuthPassword}
+        authConfirmPassword={authConfirmPassword}
+        setAuthConfirmPassword={setAuthConfirmPassword}
+        showPassword={showPassword}
+        setShowPassword={setShowPassword}
+        authError={authError}
+        setAuthError={setAuthError}
+        authLoading={authLoading}
+        handleAuthSubmit={handleAuthSubmit}
+      />
     );
   }
 
+  // ── Workspace view
   return (
-    <div className="app-layout">
-      {/* Sidebar for Sessions */}
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <h2>NexusAI</h2>
-        </div>
-        <div className="sidebar-new">
-          <button className="new-chat-btn" onClick={handleNewChat}>
-            <span style={{marginRight: '8px'}}>+</span> New Chat
-          </button>
-        </div>
-        <div className="sidebar-sessions">
-          {sessions.map(s => (
-            <div 
-              key={s.session_id} 
-              className={`session-item ${currentSession === s.session_id ? 'active' : ''}`}
-              onClick={() => setCurrentSession(s.session_id)}
-            >
-              <div className="session-title">💬 {s.title || 'New Chat'}</div>
-              <button 
-                className="delete-session-btn"
-                onClick={(e) => handleDeleteSession(e, s.session_id)}
-                title="Delete Chat"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-        
-        {/* Profile Card inside Sidebar */}
-        <div className="sidebar-profile">
-          <div className="profile-info">
-            <span className="profile-avatar">👤</span>
-            <span className="profile-username" title={currentUser}>{currentUser}</span>
-          </div>
-          <button className="logout-btn" onClick={handleLogout} title="Log Out">
-            Logout
-          </button>
-        </div>
-      </aside>
+    <div style={{
+      display: 'flex',
+      height: '100vh',
+      background: '#09090c',
+      overflow: 'hidden',
+      position: 'relative',
+    }}>
+      {/* Dynamic animated background — subtle mesh orbs */}
+      <div style={{
+        position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
+        overflow: 'hidden',
+      }}>
+        {/* Slow-drifting emerald orb top-left */}
+        <motion.div
+          animate={{ x: [0, 30, 0], y: [0, -20, 0] }}
+          transition={{ duration: 18, repeat: Infinity, ease: 'easeInOut' }}
+          style={{
+            position: 'absolute', top: '-10%', left: '10%',
+            width: '500px', height: '500px', borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(16,185,129,0.045) 0%, transparent 70%)',
+            filter: 'blur(40px)',
+          }}
+        />
+        {/* Slow-drifting indigo orb bottom-right */}
+        <motion.div
+          animate={{ x: [0, -25, 0], y: [0, 20, 0] }}
+          transition={{ duration: 22, repeat: Infinity, ease: 'easeInOut', delay: 4 }}
+          style={{
+            position: 'absolute', bottom: '-5%', right: '5%',
+            width: '420px', height: '420px', borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(99,102,241,0.04) 0%, transparent 70%)',
+            filter: 'blur(50px)',
+          }}
+        />
+        {/* Grid overlay */}
+        <div style={{
+          position: 'absolute', inset: 0,
+          backgroundImage: 'linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px)',
+          backgroundSize: '52px 52px',
+          maskImage: 'radial-gradient(ellipse 80% 80% at 50% 50%, rgba(0,0,0,0.6) 0%, transparent 100%)',
+          WebkitMaskImage: 'radial-gradient(ellipse 80% 80% at 50% 50%, rgba(0,0,0,0.6) 0%, transparent 100%)',
+        }} />
+      </div>
+      <div style={{ position: 'relative', zIndex: 1, display: 'flex', flex: 1, minWidth: 0, overflow: 'hidden' }}>
+        <Sidebar
+          sessions={sessions}
+          currentSession={currentSession}
+          setCurrentSession={setCurrentSession}
+          currentUser={currentUser}
+          handleNewChat={handleNewChat}
+          handleDeleteSession={handleDeleteSession}
+          handleLogout={handleLogout}
+        />
 
-      {/* Main Area */}
-      <main className="main-content">
-        <div className="app-container">
-          <header style={{textAlign: 'left', marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-            <div>
-              <h1 style={{fontSize: '2rem'}}>
-                  {currentSession === 'default' 
-                      ? "Welcome to NexusAI" 
-                      : sessions.find(s => s.session_id === currentSession)?.title || "New Chat"}
+        {/* Main workspace */}
+        <main style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          minWidth: 0,
+          overflow: 'hidden',
+          background: 'transparent',
+        }}>
+          {/* Top bar */}
+          <div style={{
+            height: '58px',
+            borderBottom: '1px solid #1e2027',
+            padding: '0 28px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexShrink: 0,
+            background: 'rgba(9,9,12,0.85)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+          }}>
+            {/* Left: session title */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              {currentSession !== 'default' && (
+                <span style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: '8px', height: '8px', borderRadius: '50%',
+                  background: '#10b981', boxShadow: '0 0 8px rgba(16,185,129,0.7)',
+                }} className="pulse-dot" />
+              )}
+              <h1 style={{
+                fontFamily: "'Space Grotesk', sans-serif",
+                fontSize: '0.9375rem', fontWeight: 600, letterSpacing: '-0.02em',
+                color: currentSession === 'default' ? '#3d4149' : '#d4d6db',
+              }}>
+                {currentSession === 'default' ? 'Select or create a chat' : currentSessionTitle || 'New Workspace'}
               </h1>
-              <p className="subtitle">Upload documents and ask questions</p>
+              {/* Chunk count pill */}
+              {chunkCount && currentSession !== 'default' && (
+                <motion.span
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '5px',
+                    padding: '2px 8px',
+                    background: 'rgba(16,185,129,0.08)',
+                    border: '1px solid rgba(16,185,129,0.2)',
+                    borderRadius: '99px',
+                    fontSize: '0.6875rem', fontWeight: 700, color: '#34d399',
+                  }}
+                >
+                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#34d399', display: 'inline-block' }} />
+                  {chunkCount} chunks indexed
+                </motion.span>
+              )}
             </div>
-            {currentSession !== 'default' && (
-              <button className="clear-db-btn" onClick={handleClearDatabase} title="Clear Knowledge Base">
-                Wipe index
-              </button>
+
+            {/* Right: actions */}
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              {currentSession !== 'default' && (
+                <motion.button
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  whileHover={{ scale: 1.03, background: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.4)', color: '#f87171' }}
+                  whileTap={{ scale: 0.96 }}
+                  onClick={handleClearDatabase}
+                  title="Wipe knowledge base for this session"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    padding: '6px 13px',
+                    background: 'rgba(239,68,68,0.07)',
+                    border: '1px solid rgba(239,68,68,0.25)',
+                    borderRadius: '7px',
+                    cursor: 'pointer',
+                    color: '#f87171',
+                    fontSize: '0.78rem', fontWeight: 600,
+                    letterSpacing: '0.01em',
+                    transition: 'all 0.18s ease',
+                  }}
+                >
+                  <Trash2 size={12} />
+                  Wipe Index
+                </motion.button>
+              )}
+            </div>
+          </div>
+
+          {/* Content area */}
+          <div style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: '24px 32px',
+            display: 'flex',
+            flexDirection: 'column',
+          }}>
+            {/* Empty workspace */}
+            {currentSession === 'default' && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                style={{
+                  flex: 1, display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', justifyContent: 'center',
+                  textAlign: 'center', gap: '16px',
+                }}
+              >
+                <div style={{
+                  width: '60px', height: '60px', borderRadius: '16px',
+                  background: 'rgba(16,185,129,0.07)',
+                  border: '1px solid rgba(16,185,129,0.18)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  boxShadow: '0 0 30px rgba(16,185,129,0.08)',
+                }}>
+                  <Network size={26} color="#34d399" />
+                </div>
+                <div>
+                  <h2 style={{
+                    fontFamily: "'Space Grotesk', sans-serif",
+                    fontSize: '1.3rem', fontWeight: 700, letterSpacing: '-0.02em',
+                    color: '#c9ccd2', marginBottom: '6px',
+                  }}>
+                    Ready to Orchestrate
+                  </h2>
+                  <p style={{ color: '#6b7280', fontSize: '0.875rem', maxWidth: '300px' }}>
+                    Create a new chat and upload your research documents to begin.
+                  </p>
+                </div>
+                <motion.button
+                  whileHover={{ scale: 1.04, boxShadow: '0 0 24px rgba(16,185,129,0.2)' }}
+                  whileTap={{ scale: 0.96 }}
+                  onClick={handleNewChat}
+                  style={{
+                    padding: '10px 26px',
+                    background: 'linear-gradient(135deg, #059669, #0f766e)',
+                    border: 'none', borderRadius: '8px',
+                    color: 'white', fontSize: '0.875rem', fontWeight: 600,
+                    cursor: 'pointer', marginTop: '8px',
+                  }}
+                >
+                  + New Chat
+                </motion.button>
+              </motion.div>
             )}
-          </header>
 
-          <div className="upload-card">
-            <input
-              type="file"
-              multiple
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              className="file-input"
-              accept=".pdf,.md,.txt"
-            />
-
-            {files.length === 0 && messages.length === 0 && (
+            {currentSession !== 'default' && (
               <>
-                <div className="upload-icon">📄</div>
-                <h2>Upload Research Document</h2>
-                <button className="upload-btn" onClick={handleUploadClick}>
-                  Select Files
-                </button>
+                <UploadCard
+                  files={files}
+                  status={status}
+                  response={response}
+                  messages={messages}
+                  fileInputRef={fileInputRef}
+                  handleFileChange={handleFileChange}
+                  handleUploadClick={handleUploadClick}
+                  handleSubmit={handleSubmit}
+                />
+                <ChatSection
+                  messages={messages}
+                  status={status}
+                  currentSession={currentSession}
+                  isQuerying={isQuerying}
+                  activeTool={activeTool}
+                  query={query}
+                  setQuery={setQuery}
+                  handleQuerySubmit={handleQuerySubmit}
+                  handleUploadClick={handleUploadClick}
+                />
               </>
             )}
-
-            {files.length > 0 && status !== 'uploading' && status !== 'success' && (
-              <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-                <div className="file-details">
-                  <strong>Selected Files ({files.length})</strong>
-                </div>
-                <button className="upload-btn" onClick={handleSubmit}>
-                  Process {files.length > 1 ? 'Documents' : 'Document'}
-                </button>
-              </div>
-            )}
-
-            {status === 'uploading' && (
-              <div>
-                <div className="loading-spinner"></div>
-                <p>Initializing Ingestion Pipeline...</p>
-              </div>
-            )}
-
-            {status === 'success' && response && (
-              <div className="status-message status-success">
-                ✓ {response.message}
-              </div>
-            )}
           </div>
-
-          {(status === 'success' || messages.length > 0) && currentSession !== 'default' && (
-            <div className="chat-section">
-              <div className="chat-messages">
-                 {messages.map((msg, index) => {
-                   const messageSources = msg.sources || [];
-                   // Dynamically accumulate all retrieved chunks across the entire session history 
-                   // to allow conversational follow-up citations to resolve successfully
-                   const allSessionSources = messages.reduce((acc, m) => {
-                     if (m.sources) {
-                       for (const src of m.sources) {
-                         if (!acc.some(existing => existing.content === src.content)) {
-                           acc.push(src);
-                         }
-                       }
-                     }
-                     return acc;
-                   }, [...messageSources]);
-
-                   return (
-                     <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}>
-                       <MarkdownRenderer content={msg.content} sources={allSessionSources} toolSources={msg.toolSources} />
-                    {/* ── Tool Execution Log (collapsible) ── */}
-                    {getToolLogEntries(msg).length > 0 && (
-                      <ToolExecutionLog entries={getToolLogEntries(msg)} />
-                    )}
-                    {/* ── Document Sources ── */}
-                    {msg.sources && msg.sources.filter(s => !s.metadata?.source_file?.startsWith('tool:')).length > 0 && (
-                      <div className="sources-container">
-                        <div style={{ marginBottom: '0.5rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Retrieved Contexts:</div>
-                        <div className="sources-list">
-                          {msg.sources.filter(s => !s.metadata?.source_file?.startsWith('tool:')).map((src, idx) => {
-                            const pageVal = src.metadata?.page;
-                            const hasValidPage = pageVal !== undefined && pageVal !== null && !isNaN(Number(pageVal));
-                            return (
-                              <span key={idx} className="source-badge" title={src.content}>
-                                {src.metadata?.source_file || 'Unknown'}
-                                {hasValidPage ? ` (Page ${Number(pageVal) + 1})` : ''}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-                })}
-                {isQuerying && (
-                  <div className="message assistant-message">
-                    {activeTool ? (
-                      <div className="tool-status-badge">
-                        <span className="tool-status-icon">
-                          {activeTool.name === 'web_search' ? '🌐' : activeTool.name === 'knowledge_base_search' ? '🔍' : '🧮'}
-                        </span>
-                        <span className="tool-status-text">
-                          {activeTool.name === 'web_search'
-                            ? `Searching the web for "${formatToolInput(activeTool.input)}"`
-                            : activeTool.name === 'knowledge_base_search'
-                            ? `Searching local documents for "${formatToolInput(activeTool.input)}"`
-                            : `Calculating "${formatToolInput(activeTool.input)}"`}
-                        </span>
-                        <span className="tool-status-pulse"></span>
-                      </div>
-                    ) : (
-                      <div className="loading-spinner" style={{ width: '1.5rem', height: '1.5rem', margin: 0 }}></div>
-                    )}
-                  </div>
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-
-              <form className="chat-input-wrapper" onSubmit={handleQuerySubmit}>
-                <button type="button" className="send-btn" style={{background: 'transparent', color: 'var(--text-secondary)'}} onClick={handleUploadClick} title="Upload more files">
-                    📎
-                </button>
-                <input
-                  type="text"
-                  className="chat-input"
-                  placeholder="Ask a question about the uploaded document..."
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  disabled={isQuerying}
-                />
-                <button type="submit" className="send-btn" disabled={!query.trim() || isQuerying}>
-                  ➤
-                </button>
-              </form>
-            </div>
-          )}
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
